@@ -119,7 +119,7 @@ input[type=range]:focus-visible{outline:none}
 .panel{padding:8px 14px 120px}
 .panel h3{font-family:Anton,Impact,sans-serif;font-weight:400;font-size:20px;margin:10px 0 4px}
 .sub{border:1px solid var(--line);border-radius:12px;padding:4px 12px 10px;margin:10px 0}
-.sub>.lbl{font-weight:700;font-size:13px;margin:8px 0}
+.sub>.lbl,.sub>.row>.lbl{font-weight:700;font-size:13px;margin:8px 0}
 .list{list-style:none;margin:0;padding:0}
 .list li{display:flex;align-items:center;gap:6px;border-bottom:1px solid var(--line);padding:4px 0}
 .list li button.sel{flex:1;text-align:left;border:0;background:none;padding:8px 4px;font-weight:600;border-radius:8px}
@@ -236,7 +236,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 /* Photos ESAM : préparation d'images pour les réseaux sociaux. Un seul fichier, pas de build, ES2017.
    Sections : utils, modèle, formats, chargement, dossier de travail, rendu (base, couleur, flous, calques),
    aperçu et interactions, panneaux, export, démarrage. Voir docs/ARCHITECTURE.md. */
-const APP_VERSION = "0.1";
+const APP_VERSION = "0.2";
 const $ = id => document.getElementById(id);
 
 /* ---------- utils ---------- */
@@ -309,7 +309,11 @@ const FILTRES = [
 ];
 const COULEURS = [["#F9DD10","Jaune ESAM"],["#E20C0F","Rouge"],["#FFFFFF","Blanc"],["#171618","Noir"],["#A8C8FB","Bleu ESAM"],["#2fa75a","Vert"]];
 const MODES_FLOU = [["doux","Doux"],["pixel","Pixelisé"],["dynamique","Dynamique"]];
-const TYPES = {logo:"Logo ESAM", titre:"Titre", texte:"Texte", legende:"Légende", fleche:"Flèche", cercle:"Cercle"};
+const TYPES = {logo:"Logo ESAM", titre:"Titre", texte:"Texte", legende:"Légende", fleche:"Flèche", cercle:"Cercle",
+  signature:"Signature", montagne:"Montagne", biais:"Biais", coin:"Coin", carte:"Carte"};
+const PHOTO_T = ["logo", "titre", "texte", "legende", "fleche", "cercle"], DECOR_T = ["signature", "montagne", "biais", "coin", "carte"];
+const COINS = {bd:0, bg:90, hg:180, hd:270};   // coin occupé -> rotation du motif (dessiné pour le coin bas droite)
+const GRILLES = [6, 12, 24];                   // nombre de colonnes de la grille magnétique
 function fmtOf(cfg){ return FORMATS.find(f => f.id === cfg.format) || FORMATS[0]; }
 function outSize(p){
   const f = fmtOf(p.cfg), sw = srcW(p), sh = srcH(p);
@@ -320,8 +324,12 @@ function srcW(p){ return p.cfg.rotation % 180 ? p.h : p.w; }
 function srcH(p){ return p.cfg.rotation % 180 ? p.w : p.h; }
 function newCfg(name){
   return {version:1, app:"esam-picture", fichier:name, format:"carre", cadre:null, rotation:0,
-    couleur:{lum:0, contraste:0, sat:0, temp:0, vignette:0}, filtre:"aucun", flous:[], calques:[]};
+    couleur:{lum:0, contraste:0, sat:0, temp:0, vignette:0}, filtre:"aucun", flous:[], calques:[], grille:gridPref()};
 }
+/* grille magnétique des calques : réglage de la fiche, la dernière valeur choisie sert de défaut aux nouvelles photos */
+function readGrille(g){ return {aimant:!g || g.aimant !== false, n:g && GRILLES.indexOf(+g.n) >= 0 ? +g.n : 12}; }
+function gridPref(){ try { return readGrille(JSON.parse(localStorage.getItem("esam-picture:grille") || "null")); } catch(e){ return readGrille(null); } }
+function noPriv(k, v){ return k.charAt(0) === "_" ? undefined : v; }   // _box et autres champs de travail restent hors de la fiche
 /* cadre maximal centré pour le format courant */
 function maxCadre(p){
   const f = fmtOf(p.cfg), sw = srcW(p), sh = srcH(p);
@@ -346,7 +354,7 @@ function cfgKey(p){ return `esam-picture:${p.key}`; }
 function persist(p){
   if(!p) return;
   p.modified = true;
-  try { localStorage.setItem(cfgKey(p), JSON.stringify(p.cfg)); } catch(e){}
+  try { localStorage.setItem(cfgKey(p), JSON.stringify(p.cfg, noPriv)); } catch(e){}
   if(S.dirWritable) scheduleFicheWrite(p);
   renderFilm();
 }
@@ -365,7 +373,8 @@ function applyCfg(p, d){
   if(FILTRES.some(f => f.id === d.filtre)) c.filtre = d.filtre;
   c.flous = (Array.isArray(d.flous) ? d.flous : []).map(z => ({id:z.id || uid(), forme:z.forme === "rect" ? "rect" : "ellipse", mode:MODES_FLOU.some(m => m[0] === z.mode) ? z.mode : "doux",
     force:clamp(+z.force || 2, 1, 3), x:clamp(+z.x || 0.5, 0, 1), y:clamp(+z.y || 0.5, 0, 1), w:clamp(+z.w || 0.2, 0.02, 1), h:clamp(+z.h || 0.2, 0.02, 1), angle:+z.angle || 0}));
-  c.calques = (Array.isArray(d.calques) ? d.calques : []).filter(l => TYPES[l.type]).map(l => Object.assign(defLayer(l.type), l, {id:l.id || uid(), x:clamp(+l.x || 0.5, -0.2, 1.2), y:clamp(+l.y || 0.5, -0.2, 1.2), s:clamp(+l.s || 1, 0.2, 5), rot:+l.rot || 0}));
+  c.calques = (Array.isArray(d.calques) ? d.calques : []).filter(l => TYPES[l.type]).map(l => Object.assign(defLayer(l.type), l.type === "texte" && l.larg == null ? {larg:0.9} : {}, l, {id:l.id || uid(), x:clamp(+l.x || 0.5, -0.2, 1.2), y:clamp(+l.y || 0.5, -0.2, 1.2), s:clamp(+l.s || 1, 0.2, 5), rot:+l.rot || 0}));
+  if(d.grille && typeof d.grille === "object") c.grille = readGrille(d.grille);
   p.cfg = c; fixCadre(p); p.cache = {};
   return true;
 }
@@ -373,14 +382,19 @@ function defLayer(type){
   const base = {id:uid(), type:type, x:0.5, y:0.5, s:1, rot:0};
   if(type === "logo") return Object.assign(base, {mode:"cartouche", x:0.5, y:0.1});
   if(type === "titre") return Object.assign(base, {texte:"", couleur:"#FFFFFF", fond:"ombre", y:0.3});
-  if(type === "texte") return Object.assign(base, {texte:"", couleur:"#FFFFFF", fond:"ombre", y:0.5});
+  if(type === "texte") return Object.assign(base, {texte:"", couleur:"#FFFFFF", fond:"ombre", y:0.5, larg:0.8});
   if(type === "legende") return Object.assign(base, {animal:"", date:today(), secteur:"", couleur:"#F9DD10", x:0.5, y:0.9});
   if(type === "fleche") return Object.assign(base, {couleur:"#F9DD10", epais:2});
   if(type === "cercle") return Object.assign(base, {couleur:"#F9DD10", epais:2, ar:1.3});
+  if(type === "signature") return Object.assign(base, {texte:"Équipe de Secours Animalier en Montagne", couleur:"#171618", x:0.36, y:0.93});
+  if(type === "montagne") return Object.assign(base, {couleur:"#A8C8FB", ar:1, op:100, miroir:false, x:0.71, y:0.85});
+  if(type === "biais") return Object.assign(base, {couleur:"#A8C8FB", ar:1, op:100, miroir:false, x:0.12, y:0.13});
+  if(type === "coin") return Object.assign(base, {couleur:"#171618", coin:"bd"});
+  if(type === "carte") return Object.assign(base, {texte:"", couleur:"#E20C0F", style:"barre", ar:1});
   return base;
 }
 function layerName(l){
-  if(l.type === "titre" || l.type === "texte") return l.texte ? `${TYPES[l.type]} : ${clean(l.texte).slice(0, 24)}` : TYPES[l.type];
+  if(l.type === "titre" || l.type === "texte" || l.type === "carte") return l.texte ? `${TYPES[l.type]} : ${clean(l.texte).slice(0, 24)}` : TYPES[l.type];
   if(l.type === "legende") return l.animal ? `Légende : ${clean(l.animal)}` : "Légende";
   return TYPES[l.type];
 }
@@ -721,11 +735,13 @@ function drawBrand(ctx, u, mode){
   drawLogo(ctx, x0 + pad + r, 0, r - 4*u);
   return {w:w, h:h};
 }
+/* titre : une ligne par ligne saisie (pas de retour automatique), la taille ne dépend que de s ;
+   texte : retour automatique dans une zone de largeur larg (fraction de W), indépendante de la taille du texte */
 function textBlock(ctx, u, l, W, titre){
-  const txt = clean(l.texte || (titre ? "TITRE" : "Texte")), maxW = W*0.9;
+  const txt = clean(l.texte || (titre ? "TITRE" : "Texte")), zone = titre ? 0 : (l.larg || 0.8)*W/l.s;
   const size = titre ? 86*u : 40*u, lh = titre ? 1.0 : 1.25;
   ctx.font = titre ? `${size}px ${ANTON}` : `600 ${size}px ${MONT}`;
-  const lines = wrapLines(ctx, titre ? txt.toUpperCase() : txt, maxW/l.s);
+  const lines = wrapLines(ctx, titre ? txt.toUpperCase() : txt, titre ? Infinity : zone);
   let w = 0; lines.forEach(t => { w = Math.max(w, ctx.measureText(t).width); });
   const h = lines.length*size*lh, pad = l.fond === "bande" || l.fond === "boite" ? (titre ? 14*u : 18*u) : 0;
   const bw = w + 2*pad*1.6, bh = h + 2*pad;
@@ -735,7 +751,7 @@ function textBlock(ctx, u, l, W, titre){
   else if(l.fond === "ombre"){ ctx.shadowColor = "rgba(0,0,0,.6)"; ctx.shadowBlur = 10*u; ctx.shadowOffsetY = 3*u; }
   ctx.fillStyle = l.couleur || "#fff";
   lines.forEach((t, i) => { const y = -h/2 + (i + 0.5)*size*lh; if(l.fond === "contour"){ ctx.lineWidth = 6*u; ctx.strokeStyle = l.couleur === "#171618" ? "#fff" : "#171618"; ctx.lineJoin = "round"; ctx.strokeText(t, 0, y); } ctx.fillText(t, 0, y); });
-  return {w:bw || 10, h:bh || 10};
+  return {w:Math.max(bw, zone) || 10, h:bh || 10};
 }
 function drawLegende(ctx, u, l){
   const animal = clean(l.animal || "Animal"), infos = [dateFr(l.date), clean(l.secteur)].filter(Boolean).join("  ·  ");
@@ -790,8 +806,54 @@ function drawCercle(ctx, u, l){
   ctx.restore();
   return {w:rx*2.2 + w, h:ry*2.2 + w};
 }
+/* éléments de cadre (décor de mise en page, comme sur les visuels ESAM) */
+const DECOR = {
+  montagne:{w:620, h:330, pts:[[0,1],[0.094,0.64],[0.636,0.64],[0.799,0],[1,0.104],[1,1]]},
+  biais:{w:260, h:270, pts:[[0,0],[1,0],[0.62,1],[0,0.83]]}
+};
+function drawForme(ctx, u, l){
+  const d = DECOR[l.type], w = d.w*u*(l.ar || 1), h = d.h*u;
+  ctx.save(); if(l.miroir) ctx.scale(-1, 1);
+  ctx.globalAlpha = clamp((l.op == null ? 100 : +l.op)/100, 0.1, 1); ctx.fillStyle = l.couleur || "#A8C8FB";
+  ctx.beginPath(); d.pts.forEach((q, i) => { const x = -w/2 + q[0]*w, y = -h/2 + q[1]*h; if(i) ctx.lineTo(x, y); else ctx.moveTo(x, y); });
+  ctx.closePath(); ctx.fill(); ctx.restore();
+  return {w:w, h:h};
+}
+function placeCoin(l, W, H){
+  // le coin reste collé à l'angle choisi de l'image, quelle que soit sa taille ou le format
+  const k = COINS[l.coin] == null ? "bd" : l.coin, hw = 180*(W/1080)*l.s;
+  l.rot = COINS[k]; l.x = k.charAt(1) === "d" ? 1 - hw/W : hw/W; l.y = k.charAt(0) === "b" ? 1 - hw/H : hw/H;
+}
+function drawCoin(ctx, u, l){
+  const a = 360*u;
+  const tri = (k, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(a/2, a/2); ctx.lineTo(a/2, a/2 - a*k); ctx.lineTo(a/2 - a*k, a/2); ctx.closePath(); ctx.fill(); };
+  tri(1, "#A8C8FB"); tri(0.8, "#F9DD10"); tri(0.68, l.couleur || "#171618");
+  return {w:a, h:a};
+}
+function drawSignature(ctx, u, l){
+  const txt = clean(l.texte || "Équipe de Secours Animalier en Montagne"), fs = 40*u, bar = 9*u, gap = 10*u;
+  ctx.font = `${fs}px ${ANTON}`;
+  const tw = ctx.measureText(txt).width, h = bar + gap + fs*1.15, x0 = -tw/2, y0 = -h/2;
+  ctx.fillStyle = "#F9DD10"; ctx.fillRect(x0, y0, tw*0.76, bar); ctx.fillStyle = "#E20C0F"; ctx.fillRect(x0 + tw*0.76, y0, tw*0.24, bar);
+  ctx.fillStyle = l.couleur || "#171618"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(txt, 0, y0 + bar + gap + fs*0.58);
+  return {w:tw, h:h};
+}
+function drawCarte(ctx, u, l){
+  const w = 320*u*(l.ar || 1), fs = 34*u, pad = 22*u, bar = 9*u, plein = l.style === "plein", col = l.couleur || "#E20C0F";
+  ctx.font = `700 ${fs}px ${MONT}`;
+  const lines = wrapLines(ctx, l.texte || "Carte", w - 2*pad), h = Math.max(150*u, lines.length*fs*1.25 + 2*pad + bar);
+  ctx.save(); ctx.shadowColor = "rgba(0,0,0,.18)"; ctx.shadowBlur = 10*u; ctx.shadowOffsetY = 2*u;
+  ctx.fillStyle = plein ? col : "#F3F4F6"; rRound(ctx, -w/2, -h/2, w, h, 14*u); ctx.fill(); ctx.restore();
+  if(!plein){ ctx.save(); rRound(ctx, -w/2, -h/2, w, h, 14*u); ctx.clip(); ctx.fillStyle = col; ctx.fillRect(-w/2, -h/2, w, bar); ctx.restore(); }
+  ctx.fillStyle = plein && ["#171618", "#E20C0F", "#2fa75a"].indexOf(col) >= 0 ? "#fff" : "#171618";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const mid = (-h/2 + (plein ? 0 : bar) + h/2)/2;   // centre de la zone sous la barre
+  lines.forEach((t, i) => { ctx.fillText(t, 0, mid + (i - (lines.length - 1)/2)*fs*1.25); });
+  return {w:w, h:h};
+}
 function drawLayer(ctx, l, W, H){
   const u = W/1080;
+  if(l.type === "coin") placeCoin(l, W, H);
   ctx.save(); ctx.translate(l.x*W, l.y*H); ctx.rotate((l.rot || 0)*Math.PI/180); ctx.scale(l.s, l.s);
   let box;
   if(l.type === "logo") box = drawBrand(ctx, u, l.mode);
@@ -800,8 +862,12 @@ function drawLayer(ctx, l, W, H){
   else if(l.type === "legende") box = drawLegende(ctx, u, l);
   else if(l.type === "fleche") box = drawFleche(ctx, u, l);
   else if(l.type === "cercle") box = drawCercle(ctx, u, l);
+  else if(l.type === "montagne" || l.type === "biais") box = drawForme(ctx, u, l);
+  else if(l.type === "coin") box = drawCoin(ctx, u, l);
+  else if(l.type === "signature") box = drawSignature(ctx, u, l);
+  else if(l.type === "carte") box = drawCarte(ctx, u, l);
   ctx.restore();
-  l._box = {w:(box ? box.w : 10)*l.s, h:(box ? box.h : 10)*l.s};
+  l._box = {w:(box ? box.w : 10)*l.s, h:(box ? box.h : 10)*l.s, s:l.s};
   return l._box;
 }
 /* rendu complet dans ctx (repère de sortie W x H, déjà mis à l'échelle par l'appelant) */
@@ -853,13 +919,14 @@ function dot(ctx, x, y, r, fill){
 const HR = 14;   // rayon des poignées en px CSS, x dpr dans le canvas
 function handleR(){ return hx(HR*Math.min(2, window.devicePixelRatio || 1)); }
 /* boîte tournée d'un objet : centre (cx, cy), demi-tailles, rotation ; dessine le contour et les poignées
-   (coin bas droit = taille, au-dessus = rotation) */
-function drawBox(ctx, b, withRot){
+   (coin bas droit = taille, au-dessus = rotation, milieu du bord droit = largeur de la zone) */
+function drawBox(ctx, b, withRot, withWid){
   ctx.save(); ctx.translate(b.cx, b.cy); ctx.rotate(b.rot || 0);
   handleStyle(ctx); ctx.strokeRect(-b.hw, -b.hh, b.hw*2, b.hh*2);
   const r = handleR();
   if(withRot){ ctx.setLineDash([]); ctx.beginPath(); ctx.moveTo(0, -b.hh); ctx.lineTo(0, -b.hh - r*2.4); ctx.stroke(); dot(ctx, 0, -b.hh - r*2.4, r*0.8, "#A8C8FB"); }
   dot(ctx, b.hw, b.hh, r*0.8, "#F9DD10");
+  if(withWid) dot(ctx, b.hw, 0, r*0.7, "#FFFFFF");
   ctx.restore();
 }
 function drawOutView(p){
@@ -879,11 +946,36 @@ function drawOutView(p){
     });
   } else if(S.tab === "calques" || S.tab === "export"){
     const l = p.cfg.calques.find(x => x.id === S.csel);
-    if(l && l._box && S.tab === "calques") drawBox(ctx, {cx:l.x*o.W, cy:l.y*o.H, hw:l._box.w/2, hh:l._box.h/2, rot:(l.rot || 0)*Math.PI/180}, true);
+    if(S.tab === "calques" && G.act && gridOn(p)) drawGrid(ctx, p, o);
+    if(l && l._box && S.tab === "calques") drawBox(ctx, {cx:l.x*o.W, cy:l.y*o.H, hw:l._box.w/2, hh:l._box.h/2, rot:(l.rot || 0)*Math.PI/180}, l.type !== "coin", hasWid(l));
   }
   $("tagFmt").textContent = `${fmtOf(p.cfg).nom} · ${o.W} x ${o.H}`;
   $("tagMode").textContent = S.tab === "flous" ? "Flous" : S.tab === "calques" ? "Calques" : "";
 }
+/* grille magnétique : pas carré de W/n, les bords et les axes médians de l'image servent aussi de repères */
+function gridOn(p){ return !!(p.cfg.grille && p.cfg.grille.aimant); }
+function gridStep(p, o){ return o.W/((p.cfg.grille && p.cfg.grille.n) || 12); }
+function drawGrid(ctx, p, o){
+  const st = gridStep(p, o);
+  ctx.save(); ctx.lineWidth = hx(1); ctx.strokeStyle = "rgba(255,255,255,.35)"; ctx.beginPath();
+  for(let x = st; x < o.W - 0.5; x += st){ ctx.moveTo(x, 0); ctx.lineTo(x, o.H); }
+  for(let y = st; y < o.H - 0.5; y += st){ ctx.moveTo(0, y); ctx.lineTo(o.W, y); }
+  ctx.stroke(); ctx.strokeStyle = "rgba(249,221,16,.6)"; ctx.beginPath(); ctx.moveTo(o.W/2, 0); ctx.lineTo(o.W/2, o.H); ctx.moveTo(0, o.H/2); ctx.lineTo(o.W, o.H/2); ctx.stroke();
+  ctx.restore();
+}
+/* aligne le bord gauche, le centre ou le bord droit (haut, centre, bas) sur le repère le plus proche */
+function snapAxis(c, half, step, size){
+  let best = null;
+  [c - half, c, c + half].forEach(v => { [Math.round(v/step)*step, 0, size/2, size].forEach(g => { if(best === null || Math.abs(g - v) < Math.abs(best)) best = g - v; }); });
+  return c + best;
+}
+function snapLayer(p, l, o){
+  if(!l._box) return;
+  const k = l.s/(l._box.s || l.s), a = (l.rot || 0)*Math.PI/180, c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a));
+  const bw = l._box.w*k/2, bh = l._box.h*k/2, hw = bw*c + bh*s, hh = bw*s + bh*c, st = gridStep(p, o);
+  l.x = snapAxis(l.x*o.W, hw, st, o.W)/o.W; l.y = snapAxis(l.y*o.H, hh, st, o.H)/o.H;
+}
+function hasWid(l){ return ["texte", "carte", "montagne", "biais", "cercle"].indexOf(l.type) >= 0; }
 function drawCropView(p){
   const sw = srcW(p), sh = srcH(p); layoutCanvas(sw, sh);
   const ctx = cx2; ctx.setTransform(V.k, 0, 0, V.k, 0, 0); V.space = "src";
@@ -913,7 +1005,7 @@ function curObj(p){
   if(S.tab === "cadre"){ if(!fmtOf(p.cfg).w) return null; const c = cropRect(p); return {kind:"cadre", ref:p.cfg.cadre, cx:c.x + c.w/2, cy:c.y + c.h/2, hw:c.w/2, hh:c.h/2, rot:0}; }
   const o = outSize(p);
   if(S.tab === "flous"){ const z = (p.cfg.flous || []).find(x => x.id === S.fsel); if(!z) return null; const r = zoneOut(z, p, o.W, o.H); return {kind:"flou", ref:z, cx:r.x, cy:r.y, hw:r.w/2, hh:r.h/2, rot:(z.angle || 0)*Math.PI/180}; }
-  if(S.tab === "calques"){ const l = p.cfg.calques.find(x => x.id === S.csel); if(!l || !l._box) return null; return {kind:"calque", ref:l, cx:l.x*o.W, cy:l.y*o.H, hw:l._box.w/2, hh:l._box.h/2, rot:(l.rot || 0)*Math.PI/180}; }
+  if(S.tab === "calques"){ const l = p.cfg.calques.find(x => x.id === S.csel); if(!l || !l._box) return null; return {kind:"calque", ref:l, cx:l.x*o.W, cy:l.y*o.H, hw:l._box.w/2, hh:l._box.h/2, rot:(l.rot || 0)*Math.PI/180, wid:hasWid(l), norot:l.type === "coin"}; }
   return null;
 }
 function inBox(b, q, margin){
@@ -924,6 +1016,7 @@ function handleAt(b, q, withRot){
   const r = handleR()*1.6, c = Math.cos(b.rot), s = Math.sin(b.rot);
   const corners = b.kind === "cadre" ? [[-b.hw, -b.hh], [b.hw, -b.hh], [-b.hw, b.hh], [b.hw, b.hh]] : [[b.hw, b.hh]];
   for(const k of corners){ const x = b.cx + k[0]*c - k[1]*s, y = b.cy + k[0]*s + k[1]*c; if(Math.hypot(q.x - x, q.y - y) <= r) return {h:"scale", cx:k[0], cy:k[1]}; }
+  if(b.wid && Math.hypot(q.x - (b.cx + b.hw*c), q.y - (b.cy + b.hw*s)) <= r) return {h:"wid"};
   if(withRot){ const ry = -b.hh - handleR()*2.4, x = b.cx - ry*s, y = b.cy + ry*c; if(Math.hypot(q.x - x, q.y - y) <= r) return {h:"rot"}; }
   return null;
 }
@@ -954,7 +1047,16 @@ function applyGesture(p, b, o0, dx, dy, f, da){
   } else {
     const l = b.ref;
     l.x = clamp(o0.x + dx/o.W, -0.2, 1.2); l.y = clamp(o0.y + dy/o.H, -0.2, 1.2); l.s = clamp(o0.s*f, 0.2, 5); l.rot = Math.round(o0.rot + da*180/Math.PI);
+    if(gridOn(p)){
+      if(da){ const r15 = Math.round(l.rot/15)*15; if(Math.abs(r15 - l.rot) <= 5) l.rot = r15; }   // angles ronds aimantés
+      if(dx || dy) snapLayer(p, l, o);
+    }
   }
+}
+/* poignée de largeur : f = nouvelle demi-largeur / demi-largeur au départ */
+function applyWidth(l, o0, f){
+  if(l.type === "texte") l.larg = clamp((o0.larg || 0.8)*f, 0.1, 1.5);
+  else l.ar = clamp((o0.ar || 1)*f, 0.3, 3);
 }
 cv.addEventListener("pointerdown", e => {
   const p = selected(); if(!p) return;
@@ -968,18 +1070,19 @@ cv.addEventListener("pointerdown", e => {
   }
   if(G.ptrs.size > 1) return;
   let b = curObj(p);
-  const h = b && handleAt(b, q, b.kind !== "cadre");
+  const h = b && handleAt(b, q, b.kind !== "cadre" && !b.norot);
   if(h){ G.act = {kind:h.h, b:b, o0:snapshot(b), start:q, d0:Math.max(1, Math.hypot(q.x - b.cx, q.y - b.cy)), a0:Math.atan2(q.y - b.cy, q.x - b.cx)}; return; }
+  let picked = false;
   if(S.tab !== "cadre"){
     // l'objet déjà choisi garde la main s'il est sous le doigt ; sinon on prend celui qui s'y trouve
     if(!(b && inBox(b, q, hx(8)))){
       const id = pick(p, q);
-      if(id){ if(S.tab === "flous") S.fsel = id; else S.csel = id; renderPanel(); draw(); b = curObj(p); }
+      if(id){ if(S.tab === "flous") S.fsel = id; else S.csel = id; picked = true; renderPanel(); draw(); b = curObj(p); }
       else { if(S.tab === "calques" && S.csel){ S.csel = null; renderPanel(); draw(); } return; }
     }
   } else if(b && !inBox(b, q, hx(20))){ return; }
   if(!b) return;
-  G.act = {kind:"move", b:b, o0:snapshot(b), start:q};
+  G.act = {kind:"move", b:b, o0:snapshot(b), start:q, picked:picked, far:0};
 });
 cv.addEventListener("pointermove", e => {
   if(!G.ptrs.has(e.pointerId) || !G.act) return;
@@ -992,7 +1095,12 @@ cv.addEventListener("pointermove", e => {
     const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y), an = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
     applyGesture(p, a.b, a.o0, c.x - a.c0.x, c.y - a.c0.y, d/Math.max(1, a.d0), a.b.kind === "cadre" ? 0 : an - a.a0);
   } else if(a.kind === "move"){
+    a.far = Math.max(a.far || 0, Math.hypot(q.x - a.start.x, q.y - a.start.y));
+    if(a.far < hx(4)) return;   // un simple toucher ne doit pas décaler l'objet (ni le réaligner sur la grille)
     applyGesture(p, a.b, a.o0, q.x - a.start.x, q.y - a.start.y, 1, 0);
+  } else if(a.kind === "wid"){
+    const c = Math.cos(a.b.rot), s = Math.sin(a.b.rot), lx = (q.x - a.b.cx)*c + (q.y - a.b.cy)*s;
+    applyWidth(a.b.ref, a.o0, Math.max(0.05, Math.abs(lx)/Math.max(1, a.b.hw)));
   } else if(a.kind === "scale"){
     applyGesture(p, a.b, a.o0, 0, 0, Math.hypot(q.x - a.b.cx, q.y - a.b.cy)/a.d0, 0);
   } else if(a.kind === "rot"){
@@ -1002,7 +1110,17 @@ cv.addEventListener("pointermove", e => {
 });
 function endPtr(e){
   G.ptrs.delete(e.pointerId);
-  if(G.ptrs.size === 0 && G.act){ G.act = null; const p = selected(); if(p){ persist(p); renderPanel(); draw(); } }
+  if(G.ptrs.size === 0 && G.act){
+    const a = G.act; G.act = null; const p = selected(); if(!p) return;
+    persist(p); renderPanel(); draw();
+    if(S.tab === "calques" && a.kind === "move" && a.far < hx(6) && a.b.kind === "calque"){
+      // toucher un calque : son réglage s'affiche ; deux touchers rapprochés ouvrent la saisie du texte
+      const id = a.b.ref.id, now = Date.now(), dbl = G.tapId === id && now - G.tapT < 450;
+      G.tapId = id; G.tapT = now;
+      if(dbl) focusEditor(); else if(a.picked) revealEditor();
+    }
+    return;
+  }
   else if(G.ptrs.size === 1 && G.act && G.act.kind === "pinch"){
     // un doigt reste : on continue en déplacement
     const p = selected(), b = p && curObj(p), q = Array.from(G.ptrs.values())[0];
@@ -1022,7 +1140,10 @@ document.addEventListener("keydown", e => {
   if(e.key === "Delete" || e.key === "Backspace"){ if(b.kind === "flou") delZone(p); else if(b.kind === "calque") delLayer(p); else return; e.preventDefault(); return; }
   const step = e.shiftKey ? 10 : 2, d = {ArrowLeft:[-step, 0], ArrowRight:[step, 0], ArrowUp:[0, -step], ArrowDown:[0, step]}[e.key];
   if(!d) return;
-  e.preventDefault(); applyGesture(p, b, snapshot(b), hx(d[0]*2), hx(d[1]*2), 1, 0); persist(p); draw();
+  e.preventDefault();
+  if(b.kind === "calque" && gridOn(p)){ const st = gridStep(p, outSize(p)); applyGesture(p, b, snapshot(b), Math.sign(d[0])*st, Math.sign(d[1])*st, 1, 0); }   // une case par appui
+  else applyGesture(p, b, snapshot(b), hx(d[0]*2), hx(d[1]*2), 1, 0);
+  persist(p); draw();
 });
 window.addEventListener("resize", () => { draw(); });
 function delZone(p){ p.cfg.flous = (p.cfg.flous || []).filter(z => z.id !== S.fsel); S.fsel = null; persist(p); renderPanel(); draw(); }
@@ -1092,34 +1213,17 @@ function renderPanel(){
       h += `<div class="actions"><button type="button" class="btn small ghost" data-act="dupZone">Dupliquer</button><button type="button" class="btn small ghost danger" data-act="delZone">Supprimer cette zone</button></div></div>`;
     }
   } else if(S.tab === "calques"){
+    // le réglage du calque choisi vient en premier : sur téléphone, il apparaît juste sous l'aperçu, sans descendre
     const ls = c.calques, l = ls.find(x => x.id === S.csel);
-    h += `<div class="grp"><span class="lbl">Ajouter</span><div class="chips">${Object.keys(TYPES).map(t => `<button type="button" class="chip add" data-addl="${t}">+ ${TYPES[t]}</button>`).join("")}</div></div>`;
+    if(l) h += layerEditor(l);
+    h += `<div class="grp"><span class="lbl">Ajouter sur la photo</span><div class="chips">${PHOTO_T.map(t => `<button type="button" class="chip add" data-addl="${t}">+ ${TYPES[t]}</button>`).join("")}</div></div>`;
+    h += `<div class="grp"><span class="lbl">Éléments de cadre</span><div class="chips">${DECOR_T.map(t => `<button type="button" class="chip add" data-addl="${t}">+ ${TYPES[t]}</button>`).join("")}</div><p class="hint">Signature avec les bandes jaune et rouge, montagne, biais, coin aux bandes ESAM, carte à barre de couleur.</p></div>`;
+    const g = c.grille || readGrille(null);
+    h += `<div class="grp"><span class="lbl">Grille magnétique</span>${chips([["0","Désactivée"],["6","Large"],["12","Moyenne"],["24","Fine"]], g.aimant ? String(g.n) : "0", "grille")}<p class="hint">Les bords et le centre des éléments s'alignent sur la grille, les bords et le milieu de l'image ; les angles ronds (tous les 15°) sont aimantés. Flèches du clavier : une case par appui.</p></div>`;
     if(ls.length){
       h += `<ul class="list">${ls.map((x, i) => `<li aria-selected="${x === l}"><button type="button" class="sel" data-csel="${x.id}">${esc(layerName(x))}</button><button type="button" class="ib" data-lup="${x.id}" aria-label="Dessous"${i ? "" : " disabled"}><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button><button type="button" class="ib" data-ldown="${x.id}" aria-label="Dessus"${i < ls.length - 1 ? "" : " disabled"}><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/></svg></button><button type="button" class="ib" data-ldel="${x.id}" aria-label="Supprimer"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></li>`).join("")}</ul>`;
-      h += `<p class="hint">Sur l'image : touchez un élément pour le choisir, glissez pour le déplacer, pincez ou tirez la poignée jaune pour la taille, la poignée bleue pour l'orienter. L'ordre de la liste est l'ordre de dessin (le dernier est au-dessus).</p>`;
-    } else h += `<p class="hint">Aucun élément pour l'instant : ajoutez le logo, un titre, un texte, une légende, une flèche ou un cercle.</p>`;
-    if(l){
-      h += `<div class="sub"><div class="lbl">${esc(TYPES[l.type])}</div>`;
-      if(l.type === "logo") h += `<div class="grp"><span class="lbl">Présentation</span>${chips([["cartouche","Cartouche ESAM"],["logo","Logo seul"]], l.mode, "lmode")}</div>`;
-      if(l.type === "titre" || l.type === "texte"){
-        h += `<div class="grp"><span class="lbl">${l.type === "titre" ? "Titre (en capitales)" : "Texte"}</span><textarea class="field" data-ltext="1" rows="${l.type === "titre" ? 2 : 3}" placeholder="${l.type === "titre" ? "Ex. : Chien secouru en Belledonne" : "Ex. : 3 h de marche, 1 200 m de dénivelé"}">${esc(l.texte || "")}</textarea></div>`;
-        h += `<div class="grp"><span class="lbl">Couleur</span>${swatches(l.couleur, "lcol")}</div>`;
-        h += `<div class="grp"><span class="lbl">Fond</span>${chips([["ombre","Ombre"],["contour","Contour"],["bande","Bande"],["boite","Boîte"],["aucun","Aucun"]], l.fond, "lfond")}</div>`;
-      }
-      if(l.type === "legende"){
-        h += `<div class="grp"><span class="lbl">Nom de l'animal</span><input class="field" data-lfield="animal" value="${esc(l.animal || "")}" placeholder="Ex. : Rex, chien de berger"></div>`;
-        h += `<div class="grp"><span class="lbl">Date de l'intervention</span><input class="field" type="date" data-lfield="date" value="${esc(l.date || "")}"></div>`;
-        h += `<div class="grp"><span class="lbl">Secteur</span><input class="field" data-lfield="secteur" list="secteurs" value="${esc(l.secteur || "")}" placeholder="Ex. : Belledonne, lac du Crozet"><datalist id="secteurs">${S.secteurs.map(s => `<option value="${esc(s)}">`).join("")}</datalist></div>`;
-        h += `<div class="grp"><span class="lbl">Couleur de la barre</span>${swatches(l.couleur, "lcol")}</div>`;
-      }
-      if(l.type === "fleche" || l.type === "cercle"){
-        h += `<div class="grp"><span class="lbl">Couleur</span>${swatches(l.couleur, "lcol")}</div>`;
-        h += `<div class="grp"><span class="lbl">Trait</span>${chips([["1","Fin"],["2","Moyen"],["3","Épais"]], String(l.epais || 2), "lepais")}</div>`;
-        if(l.type === "cercle") h += range("Largeur du cercle", "lar", Math.round((l.ar || 1.3)*100), 30, 300, " %");
-      }
-      h += range("Taille", "ls", Math.round(l.s*100), 20, 400, " %") + range("Rotation", "lrot", Math.round(l.rot || 0), -180, 180, "°");
-      h += `<div class="actions"><button type="button" class="btn small ghost" data-act="lcenter">Centrer</button><button type="button" class="btn small ghost" data-act="lreset">Taille et rotation d'origine</button><button type="button" class="btn small ghost danger" data-act="delLayer">Supprimer</button></div></div>`;
-    }
+      h += `<p class="hint">Sur l'image : touchez un élément pour le choisir (deux fois pour écrire son texte), glissez pour le déplacer, pincez ou tirez la poignée jaune pour la taille, la blanche pour la largeur, la bleue pour l'orienter. L'ordre de la liste est l'ordre de dessin (le dernier est au-dessus).</p>`;
+    } else h += `<p class="hint">Aucun élément pour l'instant : ajoutez le logo, un titre, un texte, une légende, une flèche, un cercle ou des éléments de cadre.</p>`;
   } else if(S.tab === "export"){
     const o = outSize(p), f = fmtOf(c), name = outName(p);
     h += `<div class="card"><div class="kv">Photo : <b>${esc(p.path)}</b></div><div class="kv">Format : <b>${esc(f.nom)}</b> (${esc(f.res)}), <b>${o.W} x ${o.H}</b> px, JPEG</div><div class="kv">Fichier exporté : <b>${esc(name)}</b></div>`;
@@ -1132,8 +1236,65 @@ function renderPanel(){
   }
   box.innerHTML = h;
 }
+function layerEditor(l){
+  let h = `<div class="sub" id="leditor"><div class="row"><div class="lbl">${esc(TYPES[l.type])}</div><button type="button" class="btn small ghost" data-act="ldone" style="flex:none">Terminé</button></div>`;
+  if(l.type === "titre" || l.type === "texte" || l.type === "carte"){
+    h += `<div class="grp"><textarea class="field" data-ltext="1" rows="2" aria-label="Texte" placeholder="${l.type === "titre" ? "Ex. : Chien secouru en Belledonne" : l.type === "carte" ? "Ex. : Drone" : "Ex. : 3 h de marche, 1 200 m de dénivelé"}">${esc(l.texte || "")}</textarea>`;
+    h += `<p class="hint">${l.type === "titre" ? "Le titre ne revient à la ligne que là où vous appuyez sur Entrée : sa taille se règle seule, avec la poignée jaune ou le curseur Taille." : l.type === "texte" ? "Le texte revient à la ligne dans la largeur de la zone (poignée blanche ou curseur), indépendamment de sa taille." : "Le texte revient à la ligne dans la carte ; la poignée blanche règle sa largeur."}</p></div>`;
+  }
+  if(l.type === "signature") h += `<div class="grp"><input class="field" data-ltext="1" aria-label="Texte de la signature" value="${esc(l.texte || "")}"></div>`;
+  if(l.type === "logo") h += `<div class="grp"><span class="lbl">Présentation</span>${chips([["cartouche","Cartouche ESAM"],["logo","Logo seul"]], l.mode, "lmode")}</div>`;
+  if(l.type === "titre" || l.type === "texte"){
+    h += `<div class="grp"><span class="lbl">Couleur</span>${swatches(l.couleur, "lcol")}</div>`;
+    h += `<div class="grp"><span class="lbl">Fond</span>${chips([["ombre","Ombre"],["contour","Contour"],["bande","Bande"],["boite","Boîte"],["aucun","Aucun"]], l.fond, "lfond")}</div>`;
+    if(l.type === "texte") h += range("Largeur de la zone", "llarg", Math.round((l.larg || 0.8)*100), 10, 150, " %");
+  }
+  if(l.type === "legende"){
+    h += `<div class="grp"><span class="lbl">Nom de l'animal</span><input class="field" data-lfield="animal" value="${esc(l.animal || "")}" placeholder="Ex. : Rex, chien de berger"></div>`;
+    h += `<div class="grp"><span class="lbl">Date de l'intervention</span><input class="field" type="date" data-lfield="date" value="${esc(l.date || "")}"></div>`;
+    h += `<div class="grp"><span class="lbl">Secteur</span><input class="field" data-lfield="secteur" list="secteurs" value="${esc(l.secteur || "")}" placeholder="Ex. : Belledonne, lac du Crozet"><datalist id="secteurs">${S.secteurs.map(s => `<option value="${esc(s)}">`).join("")}</datalist></div>`;
+    h += `<div class="grp"><span class="lbl">Couleur de la barre</span>${swatches(l.couleur, "lcol")}</div>`;
+  }
+  if(l.type === "fleche" || l.type === "cercle"){
+    h += `<div class="grp"><span class="lbl">Couleur</span>${swatches(l.couleur, "lcol")}</div>`;
+    h += `<div class="grp"><span class="lbl">Trait</span>${chips([["1","Fin"],["2","Moyen"],["3","Épais"]], String(l.epais || 2), "lepais")}</div>`;
+    if(l.type === "cercle") h += range("Largeur du cercle", "lar", Math.round((l.ar || 1.3)*100), 30, 300, " %");
+  }
+  if(l.type === "signature") h += `<div class="grp"><span class="lbl">Couleur du texte</span>${swatches(l.couleur, "lcol")}</div>`;
+  if(l.type === "montagne" || l.type === "biais"){
+    h += `<div class="grp"><span class="lbl">Couleur</span>${swatches(l.couleur, "lcol")}</div>`;
+    h += range("Largeur", "lar", Math.round((l.ar || 1)*100), 30, 300, " %") + range("Opacité", "lop", Math.round(l.op == null ? 100 : l.op), 10, 100, " %");
+    h += `<div class="actions"><button type="button" class="btn small ghost" data-act="lmiroir">Retourner (miroir)</button></div>`;
+  }
+  if(l.type === "coin"){
+    h += `<div class="grp"><span class="lbl">Position</span>${chips([["hg","Haut gauche"],["hd","Haut droite"],["bg","Bas gauche"],["bd","Bas droite"]], l.coin || "bd", "lcoin")}</div>`;
+    h += `<div class="grp"><span class="lbl">Couleur de la pointe</span>${swatches(l.couleur, "lcol")}</div>`;
+  }
+  if(l.type === "carte"){
+    h += `<div class="grp"><span class="lbl">Style</span>${chips([["barre","Barre en haut"],["plein","Fond plein"]], l.style || "barre", "lstyle")}</div>`;
+    h += `<div class="grp"><span class="lbl">Couleur</span>${swatches(l.couleur, "lcol")}</div>`;
+    h += range("Largeur", "lar", Math.round((l.ar || 1)*100), 30, 300, " %");
+  }
+  h += range("Taille", "ls", Math.round(l.s*100), 20, 400, " %");
+  if(l.type !== "coin") h += range("Rotation", "lrot", Math.round(l.rot || 0), -180, 180, "°");
+  h += `<div class="actions">${l.type !== "coin" ? `<button type="button" class="btn small ghost" data-act="lcenter">Centrer</button>` : ""}<button type="button" class="btn small ghost" data-act="lreset">Taille et rotation d'origine</button><button type="button" class="btn small ghost danger" data-act="delLayer">Supprimer</button></div></div>`;
+  return h;
+}
+/* rend visible le réglage du calque choisi (sur téléphone, juste sous l'aperçu collant) */
+function revealEditor(){
+  const sub = $("leditor"); if(!sub) return;
+  if(window.matchMedia("(min-width:1100px)").matches){ $("panel").scrollTop = 0; return; }
+  const top = document.querySelector(".left").getBoundingClientRect().bottom, r = sub.getBoundingClientRect();
+  if(r.top < top || r.top > window.innerHeight - 140) window.scrollBy(0, r.top - top - 6);
+}
+function focusEditor(){
+  revealEditor();
+  const f = $("panel").querySelector("#leditor [data-ltext]"); if(!f) return;
+  try { f.focus({preventScroll:true}); } catch(e){ f.focus(); }
+  if(f.setSelectionRange){ const n = f.value.length; f.setSelectionRange(n, n); }
+}
 function outName(p){ return `${slug(baseName(p.name)) || "photo"}_${fmtOf(p.cfg).id}.jpg`; }
-function ficheJson(p){ return JSON.stringify(p.cfg, null, 1); }
+function ficheJson(p){ return JSON.stringify(p.cfg, noPriv, 1); }
 function rememberSecteur(s){
   s = clean(s).trim(); if(!s) return;
   S.secteurs = [s].concat(S.secteurs.filter(x => x !== s)).slice(0, 12);
@@ -1149,6 +1310,7 @@ function addLayer(p, type){
   const l = defLayer(type);
   if(type === "legende"){ const prev = S.photos.map(x => x.cfg.calques.find(y => y.type === "legende")).find(Boolean); if(prev){ l.animal = prev.animal; l.date = prev.date; l.secteur = prev.secteur; } }
   if(type === "fleche" || type === "cercle"){ l.x = 0.5; l.y = 0.5; }
+  if(type === "coin"){ const o = outSize(p); placeCoin(l, o.W, o.H); }
   p.cfg.calques.push(l); S.csel = l.id;
 }
 $("panel").addEventListener("click", e => {
@@ -1160,11 +1322,16 @@ $("panel").addEventListener("click", e => {
   else if(d.filtre) c.filtre = d.filtre;
   else if(d.fsel){ S.fsel = d.fsel; }
   else if(d.fmode || d.fforce || d.fforme){ const z = c.flous.find(x => x.id === S.fsel); if(z){ if(d.fmode) z.mode = d.fmode; if(d.fforce) z.force = +d.fforce; if(d.fforme) z.forme = d.fforme; } }
-  else if(d.addl){ addLayer(p, d.addl); }
+  else if(d.addl){
+    addLayer(p, d.addl); persist(p); renderPanel(); draw();
+    if(d.addl === "titre" || d.addl === "texte" || d.addl === "carte") focusEditor(); else revealEditor();   // on écrit tout de suite le texte
+    return;
+  }
+  else if(d.grille){ const n = +d.grille; c.grille = {aimant:n > 0, n:n > 0 ? n : (c.grille && c.grille.n) || 12}; try { localStorage.setItem("esam-picture:grille", JSON.stringify(c.grille)); } catch(err){} }
   else if(d.csel){ S.csel = d.csel; }
   else if(d.lup || d.ldown){ const id = d.lup || d.ldown, i = c.calques.findIndex(x => x.id === id), j = d.lup ? i - 1 : i + 1; if(i >= 0 && j >= 0 && j < c.calques.length){ const t = c.calques[i]; c.calques[i] = c.calques[j]; c.calques[j] = t; } }
   else if(d.ldel){ S.csel = d.ldel; delLayer(p); return; }
-  else if(d.lmode || d.lcol || d.lfond || d.lepais){ const l = c.calques.find(x => x.id === S.csel); if(l){ if(d.lmode) l.mode = d.lmode; if(d.lcol) l.couleur = d.lcol; if(d.lfond) l.fond = d.lfond; if(d.lepais) l.epais = +d.lepais; } }
+  else if(d.lmode || d.lcol || d.lfond || d.lepais || d.lcoin || d.lstyle){ const l = c.calques.find(x => x.id === S.csel); if(l){ if(d.lmode) l.mode = d.lmode; if(d.lcol) l.couleur = d.lcol; if(d.lfond) l.fond = d.lfond; if(d.lepais) l.epais = +d.lepais; if(d.lcoin) l.coin = d.lcoin; if(d.lstyle) l.style = d.lstyle; } }
   else if(d.act){
     const a = d.act, l = c.calques.find(x => x.id === S.csel);
     if(a === "rotL" || a === "rotR"){ c.rotation = ((c.rotation || 0) + (a === "rotR" ? 90 : 270)) % 360; c.cadre = null; fixCadre(p); c.flous.forEach(z => { const x = z.x, y = z.y; if(a === "rotR"){ z.x = 1 - y; z.y = x; } else { z.x = y; z.y = 1 - x; } const w = z.w; z.w = z.h; z.h = w; }); }
@@ -1177,11 +1344,13 @@ $("panel").addEventListener("click", e => {
     else if(a === "delZone"){ delZone(p); return; }
     else if(a === "delLayer"){ delLayer(p); return; }
     else if(a === "lcenter" && l){ l.x = 0.5; l.y = 0.5; }
-    else if(a === "lreset" && l){ l.s = 1; l.rot = 0; }
+    else if(a === "lreset" && l){ l.s = 1; l.rot = 0; if(l.type === "texte") l.larg = 0.8; else if(l.ar) l.ar = l.type === "cercle" ? 1.3 : 1; }
+    else if(a === "lmiroir" && l){ l.miroir = !l.miroir; }
+    else if(a === "ldone"){ S.csel = null; }
     else if(a === "export"){ exportPhoto(p); redraw = false; }
     else if(a === "share"){ sharePhoto(p); redraw = false; }
     else if(a === "fiche"){ download(new Blob([ficheJson(p)], {type:"application/json"}), `${p.name}.esam.json`); redraw = false; }
-    else if(a === "ficheAll"){ download(new Blob([JSON.stringify(S.photos.map(x => x.cfg), null, 1)], {type:"application/json"}), `esam-photos_fiches_${today()}.json`); redraw = false; }
+    else if(a === "ficheAll"){ download(new Blob([JSON.stringify(S.photos.map(x => x.cfg), noPriv, 1)], {type:"application/json"}), `esam-photos_fiches_${today()}.json`); redraw = false; }
     else if(a === "exportAll"){ exportAll(); redraw = false; }
     else if(a === "applyAll"){ applyAll(p); redraw = false; }
     else if(a === "reset"){ p.cfg = newCfg(p.name); fixCadre(p); S.fsel = null; S.csel = null; p.modified = false; try { localStorage.removeItem(cfgKey(p)); } catch(err){} }
@@ -1205,9 +1374,11 @@ $("panel").addEventListener("input", e => {
     else if(d.ls !== undefined) l.s = v/100;
     else if(d.lrot !== undefined) l.rot = v;
     else if(d.lar !== undefined) l.ar = v/100;
+    else if(d.llarg !== undefined) l.larg = v/100;
+    else if(d.lop !== undefined) l.op = v;
     else return;
   }
-  if(lbl) lbl.textContent = `${t.value}${d.zoom !== undefined || d.fw !== undefined || d.fh !== undefined || d.ls !== undefined || d.lar !== undefined ? " %" : d.fa !== undefined || d.lrot !== undefined ? "°" : ""}`;
+  if(lbl) lbl.textContent = `${t.value}${d.zoom !== undefined || d.fw !== undefined || d.fh !== undefined || d.ls !== undefined || d.lar !== undefined || d.llarg !== undefined || d.lop !== undefined ? " %" : d.fa !== undefined || d.lrot !== undefined ? "°" : ""}`;
   draw();
   clearTimeout(S.inputT); S.inputT = setTimeout(() => { persist(p); if(d.ltext !== undefined || d.lfield) refreshLayerList(p); }, 400);
 });
