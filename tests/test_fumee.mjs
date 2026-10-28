@@ -1,0 +1,174 @@
+/* Test de fumée (Playwright, Chromium) : sert le dossier, charge des photos fabriquées, exerce chaque onglet,
+   exporte une photo et une fiche, puis vérifie la reprise d'une fiche. Captures d'écran dans tests/captures/.
+   Lancer : node tests/test_fumee.mjs   (Chromium et Playwright doivent être installés : npx playwright install chromium) */
+import { createRequire } from "node:module";
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+const { chromium } = createRequire(import.meta.url)("playwright");   // require honore NODE_PATH (installation globale)
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const caps = path.join(root, "tests", "captures");
+fs.mkdirSync(caps, { recursive: true });
+const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".woff2": "font/woff2", ".json": "application/json", ".jpg": "image/jpeg" };
+const server = http.createServer((req, res) => {
+  const f = path.join(root, decodeURIComponent(req.url.split("?")[0]).replace(/^\/+/, "") || "index.html");
+  if (!f.startsWith(root) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { res.writeHead(404); res.end(); return; }
+  res.writeHead(200, { "content-type": MIME[path.extname(f)] || "application/octet-stream" }); fs.createReadStream(f).pipe(res);
+});
+await new Promise(r => server.listen(0, "127.0.0.1", r));
+const base = `http://127.0.0.1:${server.address().port}/`;
+
+let failures = 0;
+function check(cond, msg) { if (cond) console.log(`  ok   ${msg}`); else { failures++; console.log(`  ECHEC ${msg}`); } }
+
+const browser = await chromium.launch();
+/* fabrique une photo JPEG (paysage ou portrait) avec des repères colorés, dans un onglet à part */
+async function fakePhoto(ctxB, w, h, name) {
+  const pg = await ctxB.newPage();
+  const b64 = await pg.evaluate(([w, h]) => {
+    const c = document.createElement("canvas"); c.width = w; c.height = h; const x = c.getContext("2d");
+    const g = x.createLinearGradient(0, 0, w, h); g.addColorStop(0, "#5b8def"); g.addColorStop(1, "#2a3d1f"); x.fillStyle = g; x.fillRect(0, 0, w, h);
+    x.fillStyle = "#e8d7b0"; x.beginPath(); x.arc(w * 0.35, h * 0.45, Math.min(w, h) * 0.12, 0, Math.PI * 2); x.fill();   // un « visage »
+    x.fillStyle = "#fff"; x.fillRect(w * 0.6, h * 0.7, w * 0.25, h * 0.08); x.fillStyle = "#000"; x.font = `${h * 0.05}px sans-serif`; x.fillText("AB-123-CD", w * 0.62, h * 0.76);
+    return c.toDataURL("image/jpeg", 0.9).split(",")[1];
+  }, [w, h]);
+  await pg.close();
+  return { name, mimeType: "image/jpeg", buffer: Buffer.from(b64, "base64") };
+}
+
+for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { width: 1400, height: 900 }]]) {
+  console.log(`\n== ${label} ${vp.width}x${vp.height}`);
+  const ctxB = await browser.newContext({ viewport: vp, deviceScaleFactor: 2, hasTouch: label === "telephone" });
+  const page = await ctxB.newPage();
+  const errors = [];
+  page.on("pageerror", e => errors.push(String(e)));
+  page.on("console", m => { if (m.type() === "error") errors.push(m.text()); });
+  await page.goto(base);
+  await page.screenshot({ path: path.join(caps, `${label}_accueil.png`) });
+  const photos = [await fakePhoto(ctxB, 1600, 1200, "DJI_0001.jpg"), await fakePhoto(ctxB, 900, 1600, "IMG_portrait.jpg")];
+  await page.setInputFiles("#fileIn", photos);
+  await page.waitForSelector("#main:not([hidden])");
+  await page.waitForFunction(() => document.querySelectorAll("#film .th:not(.add)").length === 2);
+  check(await page.isVisible("#cv"), "deux photos chargées, aperçu visible");
+  await page.screenshot({ path: path.join(caps, `${label}_cadre.png`) });
+
+  // Cadre : format story puis portrait, zoom
+  await page.click('[data-fmt="story"]');
+  await page.waitForFunction(() => document.getElementById("tagFmt").textContent.includes("1080 x 1920")).catch(() => {});
+  check((await page.textContent("#tagFmt")).includes("1080 x 1920"), "format story appliqué");
+  await page.click('[data-fmt="portrait"]');
+  await page.$eval('input[data-zoom]', el => { el.value = 60; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await page.waitForTimeout(500);
+  const cadre = await page.evaluate(() => JSON.parse(localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith("esam-picture:DJI")))).cadre);
+  check(cadre && cadre.w < 0.8, `zoom du cadre enregistré (w=${cadre && cadre.w.toFixed(2)})`);
+  // glisser le cadre sur l'aperçu
+  const box = await page.locator("#cv").boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 40, box.y + box.height / 2, { steps: 5 }); await page.mouse.up();
+  await page.waitForTimeout(300);
+  const cadre2 = await page.evaluate(() => JSON.parse(localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith("esam-picture:DJI")))).cadre);
+  check(cadre2.x > cadre.x, "cadre déplacé à la souris");
+
+  // Couleur
+  await page.click('[data-tab="couleur"]');
+  await page.click('[data-filtre="esam"]');
+  await page.$eval('input[data-col="contraste"]', el => { el.value = 30; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: path.join(caps, `${label}_couleur.png`) });
+  check((await page.getAttribute('[data-filtre="esam"]', "aria-pressed")) === "true", "filtre ESAM sélectionné");
+
+  // Flous
+  await page.click('[data-tab="flous"]');
+  await page.click('[data-act="addZone"]');
+  await page.click('[data-fmode="pixel"]');
+  await page.click('[data-act="addZone"]');
+  await page.click('[data-fmode="dynamique"]');
+  await page.click('[data-act="addZone"]');
+  check((await page.$$('[data-fsel]')).length === 3, "trois zones de flou ajoutées");
+  await page.screenshot({ path: path.join(caps, `${label}_flous.png`) });
+
+  // Calques
+  await page.click('[data-tab="calques"]');
+  for (const t of ["logo", "titre", "texte", "legende", "fleche", "cercle"]) await page.click(`[data-addl="${t}"]`);
+  check((await page.$$('[data-csel]')).length === 6, "six calques ajoutés");
+  await page.click('[data-csel]:nth-of-type(1)');
+  await page.click('button.sel:has-text("Titre")');
+  await page.fill('textarea[data-ltext]', "Chien secouru en Belledonne");
+  await page.click('button.sel:has-text("Légende")');
+  await page.fill('input[data-lfield="animal"]', "Rex");
+  await page.fill('input[data-lfield="secteur"]', "Belledonne");
+  await page.$eval('input[data-lrot]', el => { el.value = 15; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await page.waitForTimeout(600);
+  // poignée de rotation du calque sélectionné : glisser doit changer rot
+  await page.click('button.sel:has-text("Flèche")');
+  await page.waitForTimeout(200);
+  const rotBefore = await page.evaluate(() => JSON.parse(localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith("esam-picture:DJI")))).calques.find(l => l.type === "fleche").rot);
+  const bb = await page.locator("#cv").boundingBox();
+  await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2); await page.mouse.down();
+  await page.mouse.move(bb.x + bb.width / 2 + 30, bb.y + bb.height / 2 + 30, { steps: 4 }); await page.mouse.up();
+  await page.waitForTimeout(300);
+  const fl = await page.evaluate(() => JSON.parse(localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith("esam-picture:DJI")))).calques.find(l => l.type === "fleche"));
+  check(Math.abs(fl.x - 0.5) > 0.005, `flèche déplacée à la souris (x=${fl.x.toFixed(3)}, rot avant=${rotBefore})`);
+  await page.screenshot({ path: path.join(caps, `${label}_calques.png`) });
+
+  // Export photo et fiche
+  await page.click('[data-tab="export"]');
+  await page.screenshot({ path: path.join(caps, `${label}_export.png`) });
+  const [dl] = await Promise.all([page.waitForEvent("download"), page.click('[data-act="export"]')]);
+  const out = path.join(caps, `${label}_${dl.suggestedFilename()}`); await dl.saveAs(out);
+  const sz = fs.statSync(out).size;
+  check(dl.suggestedFilename() === "DJI_0001_portrait.jpg" && sz > 30000, `photo exportée ${dl.suggestedFilename()} (${sz} octets)`);
+  const dims = await page.evaluate(async b64 => new Promise(r => { const i = new Image(); i.onload = () => r([i.naturalWidth, i.naturalHeight]); i.src = "data:image/jpeg;base64," + b64; }), fs.readFileSync(out).toString("base64"));
+  check(dims[0] === 1080 && dims[1] === 1350, `dimensions de l'export ${dims.join("x")}`);
+  const [dl2] = await Promise.all([page.waitForEvent("download"), page.click('[data-act="fiche"]')]);
+  const fichePath = path.join(caps, `${label}_fiche.json`); await dl2.saveAs(fichePath);
+  const fiche = JSON.parse(fs.readFileSync(fichePath, "utf8"));
+  check(fiche.format === "portrait" && fiche.flous.length === 3 && fiche.calques.length === 6 && fiche.filtre === "esam", "fiche JSON complète");
+
+  // Reprise : nouvelle page sans localStorage, chargement de la photo puis de la fiche
+  const page2 = await ctxB.newPage();
+  await page2.goto(base); await page2.evaluate(() => localStorage.clear());
+  await page2.setInputFiles("#fileIn", [photos[0]]);
+  await page2.waitForSelector("#main:not([hidden])");
+  await page2.setInputFiles("#ficheIn", [{ name: "DJI_0001.jpg.esam.json", mimeType: "application/json", buffer: fs.readFileSync(fichePath) }]);
+  await page2.waitForTimeout(500);
+  await page2.click('[data-tab="calques"]');
+  check((await page2.$$('[data-csel]')).length === 6, "fiche reprise : six calques retrouvés");
+  check((await page2.textContent("#tagFmt")).includes("1080 x 1350"), "fiche reprise : format portrait");
+  await page2.screenshot({ path: path.join(caps, `${label}_reprise.png`) });
+
+  // Vidéo : extraction d'une image
+  const vpage = await ctxB.newPage();
+  await vpage.goto(base);
+  const vb64 = await vpage.evaluate(async () => {
+    const c = document.createElement("canvas"); c.width = 640; c.height = 360; const x = c.getContext("2d");
+    const stream = c.captureStream(25), rec = new MediaRecorder(stream, { mimeType: "video/webm" }), chunks = [];
+    rec.ondataavailable = e => chunks.push(e.data);
+    const done = new Promise(r => { rec.onstop = r; });
+    rec.start(); let t = 0;
+    await new Promise(r => { const it = setInterval(() => { x.fillStyle = `hsl(${t * 10},70%,50%)`; x.fillRect(0, 0, 640, 360); x.fillStyle = "#fff"; x.font = "40px sans-serif"; x.fillText("t=" + t, 40, 200); t++; if (t > 50) { clearInterval(it); r(); } }, 40); });
+    rec.stop(); await done;
+    const blob = new Blob(chunks, { type: "video/webm" });
+    return new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result.split(",")[1]); fr.readAsDataURL(blob); });
+  });
+  await vpage.setInputFiles("#fileIn", [{ name: "DJI_0002.webm", mimeType: "video/webm", buffer: Buffer.from(vb64, "base64") }]);
+  await vpage.waitForSelector("#vdlg[open]");
+  await vpage.waitForFunction(() => document.getElementById("vel").readyState >= 2);
+  await vpage.click('[data-vact="step"][data-dt="1"]');
+  await vpage.waitForTimeout(400);
+  await vpage.screenshot({ path: path.join(caps, `${label}_video.png`) });
+  await vpage.click('[data-vact="capture"]');
+  await vpage.waitForFunction(() => document.querySelectorAll("#film .th:not(.add):not(.vid)").length === 1);
+  await vpage.click('[data-vact="close"]');
+  check(await vpage.isVisible("#cv"), "image extraite de la vidéo, devenue une photo");
+  const pn = await vpage.textContent("#pname");
+  check(/DJI_0002_00m0[01]s\d\d\.jpg/.test(pn), `nom de l'image extraite : ${pn.trim()}`);
+
+  check(errors.length === 0, `aucune erreur de page (${errors.join(" | ").slice(0, 300)})`);
+  await ctxB.close();
+}
+await browser.close(); server.close();
+console.log(failures ? `\n${failures} échec(s)` : "\nTout est passé.");
+process.exit(failures ? 1 : 0);
