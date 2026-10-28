@@ -24,10 +24,10 @@ Le CSS vient en premier (variables de la charte dans `:root`, mode sombre), puis
 | dossier de travail | `showDirectoryPicker` (Chrome, Edge) avec reprise par IndexedDB, repli `webkitdirectory`, écriture des fiches et des exports | `openDir`, `walkDir`, `importFolder`, `writeInDir`, `scheduleFicheWrite` |
 | rendu : base | Rotation, recadrage, mise à l'échelle, couleurs par pixel (tables par canal, saturation, teinte, vignettage) | `baseCanvas`, `applyColor`, `colorParams` |
 | rendu : flous | Zones converties dans le repère de sortie ; doux, pixelisé, dynamique ; masque aux bords fondus | `applyBlurs`, `blurredCanvas`, `downUp` |
-| rendu : calques | Logo (cartouche ou seul), titre, texte, légende, flèche et cercle au crayon ; boîte de chaque calque | `drawLayer`, `drawBrand`, `textBlock`, `drawLegende`, `drawFleche`, `drawCercle`, `pencil`, `renderAll` |
+| rendu : calques | Logo (cartouche ou seul), titre, texte, légende, flèche et cercle au crayon, éléments de cadre (signature, montagne, biais, coin, carte) ; boîte de chaque calque | `drawLayer`, `drawBrand`, `textBlock`, `drawLegende`, `drawFleche`, `drawCercle`, `drawForme`, `drawCoin`, `drawSignature`, `drawCarte`, `pencil`, `renderAll` |
 | aperçu | Vue « cadre » (photo entière + cadre) ou « sortie » (image finale + poignées) ; `V` décrit l'espace courant | `draw`, `drawOutView`, `drawCropView`, `layoutCanvas` |
-| interactions | Un doigt : déplacer ou poignée (taille, rotation) ; deux doigts : pincement ; molette ; clavier | `curObj`, `pick`, `applyGesture`, événements `pointer*` |
-| pellicule et panneaux | Vignettes, sélection, onglets ; un panneau par onglet reconstruit par `renderPanel`, gestionnaires délégués sur `#panel` | `renderFilm`, `select`, `renderPanel` |
+| interactions | Un doigt : déplacer ou poignée (taille, rotation, largeur) ; deux doigts : pincement ; molette ; clavier ; grille magnétique des calques ; double toucher = saisie du texte | `curObj`, `pick`, `applyGesture`, `applyWidth`, `snapLayer`, `drawGrid`, événements `pointer*` |
+| pellicule et panneaux | Vignettes, sélection, onglets ; un panneau par onglet reconstruit par `renderPanel`, gestionnaires délégués sur `#panel` ; dans Calques, le réglage du calque choisi (`#leditor`) vient en tête du panneau | `renderFilm`, `select`, `renderPanel`, `layerEditor`, `revealEditor`, `focusEditor` |
 | export | Rendu plein format dans un cache à part, JPEG 92 %, dossier ou téléchargement, partage, export groupé | `renderExport`, `exportPhoto`, `sharePhoto`, `exportAll` |
 | vidéos | Pellicule, dialogue `#vdlg`, capture de l'image courante en pleine résolution | `addVideos`, `openVideo`, `videoThumb` |
 
@@ -47,9 +47,14 @@ couleur    {lum, contraste, sat, temp, vignette} de -100 à 100
 filtre     aucun | esam | nb | chaud | froid | vif | doux | vintage (préréglage ajouté aux réglages)
 flous      [{id, forme: ellipse|rect, mode: doux|pixel|dynamique, force: 1..3, x, y, w, h, angle}]  fractions de la source
 calques    [{id, type, x, y, s, rot, ...}]  x, y en fraction de l'image de sortie, s échelle, rot en degrés
-             logo {mode: cartouche|logo}   titre, texte {texte, couleur, fond: ombre|contour|bande|boite|aucun}
+             logo {mode: cartouche|logo}   titre, texte {texte, couleur, fond: ombre|contour|bande|boite|aucun}  texte {larg}
              legende {animal, date (AAAA-MM-JJ), secteur, couleur}   fleche {couleur, epais}   cercle {couleur, epais, ar}
+             signature {texte, couleur}   montagne, biais {couleur, ar, op, miroir}   coin {coin: hg|hd|bg|bd, couleur}
+             carte {texte, couleur, style: barre|plein, ar}
+grille     {aimant, n: 6|12|24}  grille magnétique des calques (pas carré W/n) ; la dernière valeur choisie sert de défaut
 ```
+
+Le titre ne revient à la ligne qu'aux retours saisis (sa taille ne dépend que de `s`) ; le texte revient à la ligne dans une zone de largeur `larg` (fraction de W), indépendante de `s`. Le coin est recalé dans son angle à chaque rendu (`placeCoin`). Les champs commençant par `_` (`_box`) sont des données de travail, exclues de la fiche (`noPriv`).
 
 Une fiche se lit par `applyCfg`, qui tolère les champs absents ou inconnus. Dans un dossier de travail, la fiche de `Photo.jpg` est `Photo.jpg.esam.json` à côté d'elle.
 
@@ -67,8 +72,9 @@ Flous sans `ctx.filter` : la région est réduite en plusieurs passes puis remon
 
 ## 5. Tests
 
-`node tests/test_fumee.mjs` : sert le dossier par HTTP, fabrique deux photos et une vidéo WebM dans le navigateur, puis en 390x844 (tactile) et 1400x900 : chargement, formats, zoom et déplacement du cadre, filtre et curseur de couleur, trois zones de flou, six calques, déplacement d'un calque à la souris, export JPEG (nom et dimensions vérifiés), export de la fiche, reprise de la fiche dans une page vierge, extraction d'une image de vidéo. Captures dans `tests/captures/` (ignorées par git).
+`node tests/test_fumee.mjs` : sert le dossier par HTTP, fabrique deux photos et une vidéo WebM dans le navigateur, puis en 390x844 (tactile) et 1400x900 : chargement, formats, zoom et déplacement du cadre, filtre et curseur de couleur, trois zones de flou, six calques, cinq éléments de cadre, saisie du texte à l'ajout, déplacement d'un calque à la souris, aimantation sur la grille et désactivation, export JPEG (nom et dimensions vérifiés), export de la fiche, reprise de la fiche dans une page vierge, extraction d'une image de vidéo. Captures dans `tests/captures/` (ignorées par git).
 
 ## 6. Changelog
 
+- 0.2 (2026-10-28) : grille magnétique pour les calques (large, moyenne, fine ou désactivée) ; éléments de cadre : signature ESAM, montagne, biais, coin aux bandes ESAM, carte ; le réglage du calque choisi s'affiche en haut du panneau, la saisie du texte s'ouvre à l'ajout ou d'un double toucher ; le titre ne revient plus à la ligne tout seul, le texte a une largeur de zone réglable (poignée blanche).
 - 0.1 (2026-10-28) : première version : photos de la galerie, des fichiers ou d'un dossier de travail ; extraction d'images d'une vidéo ; cadre aux formats des réseaux ; couleurs et filtres ; flous doux, pixelisé, dynamique ; logo, titre, texte, légende, flèche, cercle ; export JPEG, partage, fiche de configuration JSON.

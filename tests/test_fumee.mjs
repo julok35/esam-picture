@@ -111,6 +111,35 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   await page.waitForTimeout(300);
   const fl = await page.evaluate(() => JSON.parse(localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith("esam-picture:DJI")))).calques.find(l => l.type === "fleche"));
   check(Math.abs(fl.x - 0.5) > 0.005, `flèche déplacée à la souris (x=${fl.x.toFixed(3)}, rot avant=${rotBefore})`);
+
+  // Éléments de cadre, saisie du texte à l'ajout, grille magnétique
+  for (const t of ["signature", "montagne", "biais", "coin", "carte"]) await page.click(`[data-addl="${t}"]`);
+  check((await page.$$('[data-csel]')).length === 11, "cinq éléments de cadre ajoutés");
+  check(await page.evaluate(() => document.activeElement && document.activeElement.dataset.ltext === "1"), "saisie du texte ouverte à l'ajout de la carte");
+  const ed = await page.locator("#leditor").boundingBox();
+  check(ed && ed.y < vp.height - 100, `réglage du calque visible sans descendre (y=${ed && Math.round(ed.y)})`);
+  await page.keyboard.type("Drone");
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: path.join(caps, `${label}_elements_cadre.png`) });
+  const cfgOf = () => page.evaluate(() => JSON.parse(localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith("esam-picture:DJI")))));
+  let cf = await cfgOf();
+  const coin = cf.calques.find(l => l.type === "coin");
+  check(Math.abs(coin.x - (1 - 180 / 1080)) < 0.002 && Math.abs(coin.y - (1 - 180 / 1350)) < 0.002, "coin collé à l'angle bas droite");
+  check(cf.calques.find(l => l.type === "carte").texte === "Drone" && cf.grille && cf.grille.aimant, "texte de la carte saisi, grille active");
+  const b3 = await page.locator("#cv").boundingBox();
+  await page.mouse.move(b3.x + b3.width / 2, b3.y + b3.height / 2); await page.mouse.down();
+  await page.mouse.move(b3.x + b3.width / 2 + 47, b3.y + b3.height / 2 + 23, { steps: 5 }); await page.mouse.up();
+  await page.waitForTimeout(300);
+  cf = await cfgOf();
+  const carte = cf.calques.find(l => l.type === "carte"), rx = Math.round(carte.x * 1080) % 90;
+  check(carte.x !== 0.5 && [0, 20, 70].includes(rx), `carte aimantée sur la grille (x=${(carte.x * 1080).toFixed(1)} px)`);
+  check(!JSON.stringify(cf).includes("_box"), "pas de champ de travail dans la fiche");
+  await page.click('[data-csel]:has-text("Titre")');
+  await page.$eval('input[data-ls]', el => { el.value = 180; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await page.click('[data-grille="0"]');
+  cf = await cfgOf();
+  check(cf.grille.aimant === false, "grille désactivable");
+  await page.click('[data-act="ldone"]');
   await page.screenshot({ path: path.join(caps, `${label}_calques.png`) });
 
   // Export photo et fiche
@@ -125,7 +154,7 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   const [dl2] = await Promise.all([page.waitForEvent("download"), page.click('[data-act="fiche"]')]);
   const fichePath = path.join(caps, `${label}_fiche.json`); await dl2.saveAs(fichePath);
   const fiche = JSON.parse(fs.readFileSync(fichePath, "utf8"));
-  check(fiche.format === "portrait" && fiche.flous.length === 3 && fiche.calques.length === 6 && fiche.filtre === "esam", "fiche JSON complète");
+  check(fiche.format === "portrait" && fiche.flous.length === 3 && fiche.calques.length === 11 && fiche.filtre === "esam", "fiche JSON complète");
 
   // Reprise : nouvelle page sans localStorage, chargement de la photo puis de la fiche
   const page2 = await ctxB.newPage();
@@ -135,7 +164,7 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   await page2.setInputFiles("#ficheIn", [{ name: "DJI_0001.jpg.esam.json", mimeType: "application/json", buffer: fs.readFileSync(fichePath) }]);
   await page2.waitForTimeout(500);
   await page2.click('[data-tab="calques"]');
-  check((await page2.$$('[data-csel]')).length === 6, "fiche reprise : six calques retrouvés");
+  check((await page2.$$('[data-csel]')).length === 11, "fiche reprise : onze calques retrouvés");
   check((await page2.textContent("#tagFmt")).includes("1080 x 1350"), "fiche reprise : format portrait");
   await page2.screenshot({ path: path.join(caps, `${label}_reprise.png`) });
 
