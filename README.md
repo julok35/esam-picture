@@ -17,7 +17,7 @@ Outil de l'ESAM (Equipe de Secours Animalier en Montagne), dans la lignée de [e
 | Couleur | Luminosité, contraste, saturation, température, vignettage ; filtres (ESAM, noir et blanc, chaud, froid, vif, doux, vintage). |
 | Flous | Zones ovales ou rectangulaires, trois rendus (doux, pixelisé, dynamique), trois intensités, bords fondus pour rester discrets ; déplaçables, redimensionnables, orientables. |
 | Calques | Logo ESAM (cartouche ou logo seul), titre, texte, légende (nom de l'animal, date, secteur), flèche et cercle « au crayon ». Chaque calque se déplace, s'agrandit et s'oriente au doigt, à la souris ou par curseurs. |
-| Export | JPEG aux dimensions du format choisi, partage direct (téléphone), export de toutes les photos modifiées. |
+| Export | JPEG aux dimensions du format choisi, partage direct (téléphone), export de toutes les photos modifiées. Aucune métadonnée d'origine (localisation, date, auteur, appareil) : le fichier porte les métadonnées ESAM (auteur, droits, description facultative). |
 | Fiche de configuration | JSON par photo décrivant tout le travail ; export et import pour reprendre plus tard ou sur un autre appareil. Avec un dossier de travail, la fiche `Photo.jpg.esam.json` est écrite à côté de la photo et reprise à l'ouverture suivante ; les exports vont dans `publication/`. |
 
 Le travail en cours est aussi gardé dans le navigateur (localStorage, clé = nom, taille et date du fichier) : rouvrir la même photo retrouve ses réglages.

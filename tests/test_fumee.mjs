@@ -35,7 +35,22 @@ async function fakePhoto(ctxB, w, h, name) {
     return c.toDataURL("image/jpeg", 0.9).split(",")[1];
   }, [w, h]);
   await pg.close();
-  return { name, mimeType: "image/jpeg", buffer: Buffer.from(b64, "base64") };
+  const jpg = Buffer.from(b64, "base64");
+  return { name, mimeType: "image/jpeg", buffer: Buffer.concat([jpg.subarray(0, 2), fakeExif(), jpg.subarray(2)]) };
+}
+/* EXIF d'un téléphone : auteur, date de prise de vue et position GPS, qui ne doivent pas se retrouver dans l'export */
+function fakeExif() {
+  const u16 = v => [v >> 8 & 255, v & 255], u32 = v => [v >>> 24 & 255, v >> 16 & 255, v >> 8 & 255, v & 255];
+  const artist = [...Buffer.from("Julien Dupont\0")], date = [...Buffer.from("2024:05:01 10:00:00\0")];
+  const ifd0 = 8, gpsAt = ifd0 + 2 + 3 * 12 + 4, dataAt = gpsAt + 2 + 2 * 12 + 4;
+  const tiff = [0x4D, 0x4D, 0, 42, ...u32(ifd0), ...u16(3),
+    ...u16(0x0132), ...u16(2), ...u32(date.length), ...u32(dataAt),
+    ...u16(0x013B), ...u16(2), ...u32(artist.length), ...u32(dataAt + date.length),
+    ...u16(0x8825), ...u16(4), ...u32(1), ...u32(gpsAt), 0, 0, 0, 0,
+    ...u16(2), ...u16(0x0001), ...u16(2), ...u32(2), 0x4E, 0, 0, 0, ...u16(0x0003), ...u16(2), ...u32(2), 0x45, 0, 0, 0, 0, 0, 0, 0,
+    ...date, ...artist];
+  const body = [...Buffer.from("Exif\0\0"), ...tiff];
+  return Buffer.from([0xFF, 0xE1, ...u16(body.length + 2), ...body]);
 }
 
 for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { width: 1400, height: 900 }]]) {
@@ -144,6 +159,8 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
 
   // Export photo et fiche
   await page.click('[data-tab="export"]');
+  await page.fill('[data-meta="description"]', "Chien secouru par l'ESAM");
+  await page.waitForTimeout(500);
   await page.screenshot({ path: path.join(caps, `${label}_export.png`) });
   const [dl] = await Promise.all([page.waitForEvent("download"), page.click('[data-act="export"]')]);
   const out = path.join(caps, `${label}_${dl.suggestedFilename()}`); await dl.saveAs(out);
@@ -151,6 +168,12 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   check(dl.suggestedFilename() === "DJI_0001_portrait.jpg" && sz > 30000, `photo exportée ${dl.suggestedFilename()} (${sz} octets)`);
   const dims = await page.evaluate(async b64 => new Promise(r => { const i = new Image(); i.onload = () => r([i.naturalWidth, i.naturalHeight]); i.src = "data:image/jpeg;base64," + b64; }), fs.readFileSync(out).toString("base64"));
   check(dims[0] === 1080 && dims[1] === 1350, `dimensions de l'export ${dims.join("x")}`);
+  const jb = fs.readFileSync(out), src = photos[0].buffer;
+  check(src.includes("Julien Dupont") && src.includes("2024:05:01"), "la photo d'origine porte auteur, date et GPS");
+  const hdr = jb.subarray(0, jb.indexOf(Buffer.from([0xFF, 0xDA])));   // en-têtes, avant les données de l'image
+  check(!jb.includes("Julien Dupont") && !jb.includes("2024:05") && !hdr.includes(Buffer.from([0x88, 0x25])), "export sans auteur, date ni GPS d'origine");
+  check(jb.includes("Exif\0\0") && jb.includes("ESAM - Equipe de Secours Animalier en Montagne") && jb.includes("(c) ESAM") && jb.includes("Photos ESAM v"), "EXIF ESAM (auteur, droits, logiciel)");
+  check(jb.includes(Buffer.from("<dc:creator><rdf:Seq><rdf:li>ESAM - Équipe")) && jb.includes("Chien secouru par l'ESAM"), "XMP ESAM et description");
   const [dl2] = await Promise.all([page.waitForEvent("download"), page.click('[data-act="fiche"]')]);
   const fichePath = path.join(caps, `${label}_fiche.json`); await dl2.saveAs(fichePath);
   const fiche = JSON.parse(fs.readFileSync(fichePath, "utf8"));
