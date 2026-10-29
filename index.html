@@ -236,7 +236,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 /* Photos ESAM : préparation d'images pour les réseaux sociaux. Un seul fichier, pas de build, ES2017.
    Sections : utils, modèle, formats, chargement, dossier de travail, rendu (base, couleur, flous, calques),
    aperçu et interactions, panneaux, export, démarrage. Voir docs/ARCHITECTURE.md. */
-const APP_VERSION = "0.2";
+const APP_VERSION = "0.3";
 const $ = id => document.getElementById(id);
 
 /* ---------- utils ---------- */
@@ -324,11 +324,20 @@ function srcW(p){ return p.cfg.rotation % 180 ? p.h : p.w; }
 function srcH(p){ return p.cfg.rotation % 180 ? p.w : p.h; }
 function newCfg(name){
   return {version:1, app:"esam-picture", fichier:name, format:"carre", cadre:null, rotation:0,
-    couleur:{lum:0, contraste:0, sat:0, temp:0, vignette:0}, filtre:"aucun", flous:[], calques:[], grille:gridPref()};
+    couleur:{lum:0, contraste:0, sat:0, temp:0, vignette:0}, filtre:"aucun", flous:[], calques:[], grille:gridPref(), meta:readMeta(metaPref())};
 }
 /* grille magnétique des calques : réglage de la fiche, la dernière valeur choisie sert de défaut aux nouvelles photos */
 function readGrille(g){ return {aimant:!g || g.aimant !== false, n:g && GRILLES.indexOf(+g.n) >= 0 ? +g.n : 12}; }
 function gridPref(){ try { return readGrille(JSON.parse(localStorage.getItem("esam-picture:grille") || "null")); } catch(e){ return readGrille(null); } }
+/* métadonnées écrites dans le JPEG exporté (à la place de celles de la photo d'origine) ; auteur et droits
+   choisis en dernier servent de défaut aux nouvelles photos, la description reste propre à chaque photo */
+const META_DEF = {auteur:"ESAM - Équipe de Secours Animalier en Montagne", droits:"© ESAM - Équipe de Secours Animalier en Montagne", description:""};
+function readMeta(m){
+  const o = {};
+  Object.keys(META_DEF).forEach(k => { o[k] = m && typeof m[k] === "string" ? clean(m[k]).slice(0, 300) : META_DEF[k]; });
+  return o;
+}
+function metaPref(){ try { const m = JSON.parse(localStorage.getItem("esam-picture:meta") || "null"); return m ? {auteur:m.auteur, droits:m.droits} : null; } catch(e){ return null; } }
 function noPriv(k, v){ return k.charAt(0) === "_" ? undefined : v; }   // _box et autres champs de travail restent hors de la fiche
 /* cadre maximal centré pour le format courant */
 function maxCadre(p){
@@ -375,6 +384,7 @@ function applyCfg(p, d){
     force:clamp(+z.force || 2, 1, 3), x:clamp(+z.x || 0.5, 0, 1), y:clamp(+z.y || 0.5, 0, 1), w:clamp(+z.w || 0.2, 0.02, 1), h:clamp(+z.h || 0.2, 0.02, 1), angle:+z.angle || 0}));
   c.calques = (Array.isArray(d.calques) ? d.calques : []).filter(l => TYPES[l.type]).map(l => Object.assign(defLayer(l.type), l.type === "texte" && l.larg == null ? {larg:0.9} : {}, l, {id:l.id || uid(), x:clamp(+l.x || 0.5, -0.2, 1.2), y:clamp(+l.y || 0.5, -0.2, 1.2), s:clamp(+l.s || 1, 0.2, 5), rot:+l.rot || 0}));
   if(d.grille && typeof d.grille === "object") c.grille = readGrille(d.grille);
+  if(d.meta && typeof d.meta === "object") c.meta = readMeta(d.meta);
   p.cfg = c; fixCadre(p); p.cache = {};
   return true;
 }
@@ -1229,9 +1239,14 @@ function renderPanel(){
     h += `<div class="card"><div class="kv">Photo : <b>${esc(p.path)}</b></div><div class="kv">Format : <b>${esc(f.nom)}</b> (${esc(f.res)}), <b>${o.W} x ${o.H}</b> px, JPEG</div><div class="kv">Fichier exporté : <b>${esc(name)}</b></div>`;
     if(S.dirWritable) h += `<div class="kv">Dossier de travail : les exports vont dans <b>publication/</b>, la fiche est enregistrée à côté de la photo ${p.ficheOk ? "(à jour)" : ""}.</div>`;
     h += `</div>`;
+    const m = c.meta || readMeta(null);
+    h += `<div class="grp"><span class="lbl">Métadonnées du fichier exporté</span><p class="hint">Rien n'est repris de la photo d'origine : ni localisation GPS, ni date de prise de vue, ni auteur, ni appareil. Le fichier porte à la place les informations ci-dessous.</p></div>`
+      + `<div class="grp"><span class="lbl">Auteur</span><input class="field" data-meta="auteur" value="${esc(m.auteur)}"></div>`
+      + `<div class="grp"><span class="lbl">Droits</span><input class="field" data-meta="droits" value="${esc(m.droits)}"></div>`
+      + `<div class="grp"><span class="lbl">Description (facultative)</span><input class="field" data-meta="description" value="${esc(m.description)}" placeholder="Ex. : Chien secouru par l'ESAM"><p class="hint">Évitez d'y mettre un lieu précis ou une date.</p></div>`;
     h += `<div class="actions"><button type="button" class="btn primary" data-act="export">Exporter la photo</button>${navigator.canShare ? `<button type="button" class="btn" data-act="share">Partager...</button>` : ""}</div>`;
     h += `<div class="grp"><span class="lbl">Fiche de configuration (pour reprendre l'édition plus tard)</span><div class="actions"><button type="button" class="btn small ghost" data-act="fiche">Exporter la fiche (JSON)</button><label class="btn small ghost" tabindex="0" for="ficheIn">Importer une fiche</label></div><p class="hint">La fiche décrit tout ce qui a été fait sur la photo (format, cadre, couleurs, flous, calques). Avec un dossier de travail ouvert sur ordinateur, elle est enregistrée automatiquement (${esc(p.name)}.esam.json) et reprise à l'ouverture suivante.</p></div>`;
-    h += `<div class="grp"><span class="lbl">Toutes les photos</span><div class="actions"><button type="button" class="btn small ghost" data-act="exportAll">Exporter toutes les photos modifiées</button><button type="button" class="btn small ghost" data-act="ficheAll">Exporter toutes les fiches</button><button type="button" class="btn small ghost" data-act="applyAll"${S.photos.length > 1 ? "" : " disabled"}>Copier les réglages de cette photo vers les autres</button></div><p class="hint">« Copier les réglages » reporte le format, les couleurs, le filtre, le logo et la légende (pas le cadre, ni les flous, ni les flèches).</p></div>`;
+    h += `<div class="grp"><span class="lbl">Toutes les photos</span><div class="actions"><button type="button" class="btn small ghost" data-act="exportAll">Exporter toutes les photos modifiées</button><button type="button" class="btn small ghost" data-act="ficheAll">Exporter toutes les fiches</button><button type="button" class="btn small ghost" data-act="applyAll"${S.photos.length > 1 ? "" : " disabled"}>Copier les réglages de cette photo vers les autres</button></div><p class="hint">« Copier les réglages » reporte le format, les couleurs, le filtre, le logo, la légende, l'auteur et les droits (pas le cadre, ni les flous, ni les flèches, ni la description).</p></div>`;
     h += `<div class="grp"><span class="lbl">Cette photo</span><div class="actions"><button type="button" class="btn small ghost" data-act="reset">Tout réinitialiser</button><button type="button" class="btn small ghost danger" data-act="remove">Retirer de la liste</button></div></div>`;
   }
   box.innerHTML = h;
@@ -1366,6 +1381,12 @@ $("panel").addEventListener("input", e => {
   const lbl = t.parentElement && t.parentElement.querySelector(".val");
   if(d.zoom !== undefined){ const m = maxCadre(p), o = c.cadre, w = m.w*v/100, cxp = o.x + o.w/2, cyp = o.y + o.h/2; o.w = w; o.h = w*srcW(p)/srcH(p)/(fmtOf(c).w/fmtOf(c).h); o.x = cxp - o.w/2; o.y = cyp - o.h/2; fixCadre(p); }
   else if(d.col){ c.couleur[d.col] = v; }
+  else if(d.meta){
+    c.meta = c.meta || readMeta(null); c.meta[d.meta] = clean(t.value).slice(0, 300);
+    if(d.meta !== "description") try { localStorage.setItem("esam-picture:meta", JSON.stringify({auteur:c.meta.auteur, droits:c.meta.droits})); } catch(err){}
+    clearTimeout(S.inputT); S.inputT = setTimeout(() => persist(p), 400);
+    return;
+  }
   else if(d.fw !== undefined || d.fh !== undefined || d.fa !== undefined){ const z = c.flous.find(x => x.id === S.fsel); if(!z) return; if(d.fw !== undefined) z.w = v/100; if(d.fh !== undefined) z.h = v/100; if(d.fa !== undefined) z.angle = v; }
   else {
     const l = c.calques.find(x => x.id === S.csel); if(!l) return;
@@ -1399,6 +1420,7 @@ function applyAll(p){
     if(x === p) return;
     x.cfg.format = c.format; x.cfg.cadre = null; fixCadre(x);
     x.cfg.couleur = Object.assign({}, c.couleur); x.cfg.filtre = c.filtre;
+    x.cfg.meta = Object.assign(readMeta(x.cfg.meta), {auteur:(c.meta || META_DEF).auteur, droits:(c.meta || META_DEF).droits});
     x.cfg.calques = x.cfg.calques.filter(l => l.type !== "logo" && l.type !== "legende").concat(c.calques.filter(l => l.type === "logo" || l.type === "legende").map(l => Object.assign({}, l, {id:uid()})));
     x.cache = {}; persist(x);
   });
@@ -1407,12 +1429,61 @@ function applyAll(p){
 
 /* ---------- export ---------- */
 function toBlob(canvas, type, q){ return new Promise(res => canvas.toBlob(res, type, q)); }
+/* Métadonnées : le JPEG encodé par le canvas ne contient rien de la photo d'origine (ni EXIF, ni GPS, ni date) ;
+   par sûreté on retire tout de même les segments APP1 à APP15 et les commentaires, puis on écrit les métadonnées
+   ESAM : EXIF (auteur, droits, logiciel, description, en ASCII, orientation normale) et XMP (les mêmes en UTF-8).
+   Aucune date ni aucun lieu. */
+function ascii(s){ return clean(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/©/g, "(c)").replace(/[^\x20-\x7e]/g, ""); }
+function exifSeg(m){
+  const tags = [[0x010E, ascii(m.description)], [0x0112, 1], [0x0131, `Photos ESAM v${APP_VERSION}`], [0x013B, ascii(m.auteur)], [0x8298, ascii(m.droits)]]
+    .filter(t => t[1] !== "");
+  const data = [], dataAt = 8 + 2 + tags.length*12 + 4, ifd = [];
+  let off = dataAt;
+  const u16 = v => [v >> 8 & 255, v & 255], u32 = v => [v >>> 24 & 255, v >> 16 & 255, v >> 8 & 255, v & 255];
+  tags.forEach(t => {
+    if(typeof t[1] === "number"){ ifd.push(...u16(t[0]), ...u16(3), ...u32(1), ...u16(t[1]), 0, 0); return; }   // SHORT
+    const b = Array.from(t[1], ch => ch.charCodeAt(0)).concat(0), val = b.length <= 4 ? b.concat([0, 0, 0, 0]).slice(0, 4) : u32(off);
+    ifd.push(...u16(t[0]), ...u16(2), ...u32(b.length), ...val);                                                     // ASCII
+    if(b.length > 4){ if(b.length % 2) b.push(0); data.push(...b); off += b.length; }
+  });
+  const tiff = [0x4D, 0x4D, 0, 42, ...u32(8), ...u16(tags.length), ...ifd, 0, 0, 0, 0, ...data];
+  const body = [0x45, 0x78, 0x69, 0x66, 0, 0].concat(tiff);
+  return [0xFF, 0xE1, ...u16(body.length + 2), ...body];
+}
+function xmpSeg(m){
+  const li = s => `<rdf:li xml:lang="x-default">${esc(s)}</rdf:li>`;
+  const x = `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">`
+    + `<rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:xmpRights="http://ns.adobe.com/xap/1.0/rights/">`
+    + (m.auteur ? `<dc:creator><rdf:Seq><rdf:li>${esc(m.auteur)}</rdf:li></rdf:Seq></dc:creator>` : "")
+    + (m.droits ? `<dc:rights><rdf:Alt>${li(m.droits)}</rdf:Alt></dc:rights><xmpRights:Marked>True</xmpRights:Marked>` : "")
+    + (m.description ? `<dc:description><rdf:Alt>${li(m.description)}</rdf:Alt></dc:description>` : "")
+    + `<xmp:CreatorTool>Photos ESAM v${APP_VERSION}</xmp:CreatorTool></rdf:Description></rdf:RDF></x:xmpmeta><?xpacket end="w"?>`;
+  const body = Array.from(new TextEncoder().encode("http://ns.adobe.com/xap/1.0/\0" + x));
+  return [0xFF, 0xE1, body.length + 2 >> 8 & 255, body.length + 2 & 255, ...body];
+}
+async function withMeta(blob, meta){
+  const b = new Uint8Array(await new Response(blob).arrayBuffer()), m = readMeta(meta);
+  if(b[0] !== 0xFF || b[1] !== 0xD8) return blob;
+  const head = [], rest = [];
+  let i = 2;
+  while(i + 3 < b.length){
+    if(b[i] !== 0xFF) return blob;                        // structure inattendue : on garde l'encodage du canvas, déjà sans métadonnées
+    const mk = b[i + 1];
+    if(mk === 0xFF){ i++; continue; }
+    if(mk === 0xDA) break;                                // début des données de l'image
+    const len = b[i + 2] << 8 | b[i + 3], seg = b.subarray(i, i + 2 + len);
+    if(mk === 0xE0) head.push(seg);                       // APP0 (JFIF) conservé en tête
+    else if(!(mk >= 0xE1 && mk <= 0xEF) && mk !== 0xFE) rest.push(seg);   // APP1..APP15 (EXIF, XMP, ICC...) et commentaires retirés
+    i += 2 + len;
+  }
+  return new Blob([b.subarray(0, 2)].concat(head, [new Uint8Array(exifSeg(m)), new Uint8Array(xmpSeg(m))], rest, [b.subarray(i)]), {type:"image/jpeg"});
+}
 async function renderExport(p){
   await fontsReady();
   const o = outSize(p), c = mkCanvas(o.W, o.H), ctx = c.getContext("2d");
   const keep = p.cache; p.cache = {};                      // cache à part pour ne pas écraser celui de l'aperçu
   try { renderAll(ctx, p, o.W, o.H, o.W, o.H); } finally { p.cache = keep; }
-  return toBlob(c, "image/jpeg", 0.92);
+  return withMeta(await toBlob(c, "image/jpeg", 0.92), p.cfg.meta);
 }
 async function exportPhoto(p, silent){
   $("busy").hidden = false;
@@ -1506,8 +1577,9 @@ vd.addEventListener("click", async e => {
     b.disabled = true;
     try {
       const c = mkCanvas(vel.videoWidth, vel.videoHeight); c.getContext("2d").drawImage(vel, 0, 0);
-      const blob = await toBlob(c, "image/jpeg", 0.95);
-      if(!blob) throw new Error("image vide (vidéo protégée ou non décodée)");
+      const raw = await toBlob(c, "image/jpeg", 0.95);
+      if(!raw) throw new Error("image vide (vidéo protégée ou non décodée)");
+      const blob = await withMeta(raw, metaPref());      // rien de la vidéo d'origine (lieu, date, appareil) dans l'image extraite
       const name = `${baseName(VCUR.name)}_${tcode(vel.currentTime)}.jpg`, file = new File([blob], name, {type:"image/jpeg", lastModified:Date.now()});
       VCUR.n++; $("vcount").textContent = `${VCUR.n} image(s) capturée(s)`;
       const dirPart = VCUR.path.split("/").slice(0, -1).join("/");

@@ -28,7 +28,7 @@ Le CSS vient en premier (variables de la charte dans `:root`, mode sombre), puis
 | aperçu | Vue « cadre » (photo entière + cadre) ou « sortie » (image finale + poignées) ; `V` décrit l'espace courant | `draw`, `drawOutView`, `drawCropView`, `layoutCanvas` |
 | interactions | Un doigt : déplacer ou poignée (taille, rotation, largeur) ; deux doigts : pincement ; molette ; clavier ; grille magnétique des calques ; double toucher = saisie du texte | `curObj`, `pick`, `applyGesture`, `applyWidth`, `snapLayer`, `drawGrid`, événements `pointer*` |
 | pellicule et panneaux | Vignettes, sélection, onglets ; un panneau par onglet reconstruit par `renderPanel`, gestionnaires délégués sur `#panel` ; dans Calques, le réglage du calque choisi (`#leditor`) vient en tête du panneau | `renderFilm`, `select`, `renderPanel`, `layerEditor`, `revealEditor`, `focusEditor` |
-| export | Rendu plein format dans un cache à part, JPEG 92 %, dossier ou téléchargement, partage, export groupé | `renderExport`, `exportPhoto`, `sharePhoto`, `exportAll` |
+| export | Rendu plein format dans un cache à part, JPEG 92 %, métadonnées ESAM à la place de celles d'origine, dossier ou téléchargement, partage, export groupé | `renderExport`, `withMeta`, `exifSeg`, `xmpSeg`, `exportPhoto`, `sharePhoto`, `exportAll` |
 | vidéos | Pellicule, dialogue `#vdlg`, capture de l'image courante en pleine résolution | `addVideos`, `openVideo`, `videoThumb` |
 
 Conventions du script : rendu par `innerHTML` et gabarits avec `esc()` sur toute valeur venant des données ; gestionnaires posés une fois sur les conteneurs, lisant des attributs `data-*` ; fonctions déclarées, état en `const`/`let`.
@@ -52,6 +52,7 @@ calques    [{id, type, x, y, s, rot, ...}]  x, y en fraction de l'image de sorti
              signature {texte, couleur}   montagne, biais {couleur, ar, op, miroir}   coin {coin: hg|hd|bg|bd, couleur}
              carte {texte, couleur, style: barre|plein, ar}
 grille     {aimant, n: 6|12|24}  grille magnétique des calques (pas carré W/n) ; la dernière valeur choisie sert de défaut
+meta       {auteur, droits, description}  métadonnées écrites dans le JPEG exporté ; auteur et droits choisis en dernier servent de défaut
 ```
 
 Le titre ne revient à la ligne qu'aux retours saisis (sa taille ne dépend que de `s`) ; le texte revient à la ligne dans une zone de largeur `larg` (fraction de W), indépendante de `s`. Le coin est recalé dans son angle à chaque rendu (`placeCoin`). Les champs commençant par `_` (`_box`) sont des données de travail, exclues de la fiche (`noPriv`).
@@ -68,13 +69,16 @@ Une fiche se lit par `applyCfg`, qui tolère les champs absents ou inconnus. Dan
 
 Les tailles des calques sont en unités `u = W/1080` : un même calque a la même proportion quel que soit le format. L'aperçu rend dans un canvas de la taille de l'écran (au plus W), l'export dans un canvas W x H ; les deux passent par les mêmes fonctions, avec le même aléa (`rng(hash(id))`) pour les tracés au crayon.
 
+Métadonnées : le JPEG encodé par le canvas ne reprend rien de la photo d'origine (ni EXIF, ni GPS, ni date, ni appareil). `withMeta` retire en plus tout segment APP1 à APP15 et commentaire, puis écrit un EXIF (Artist, Copyright, Software, ImageDescription, en ASCII sans accents, Orientation 1) et un XMP (dc:creator, dc:rights, dc:description, xmp:CreatorTool, en UTF-8). Aucune date, aucun lieu. Les images extraites d'une vidéo passent par le même traitement.
+
 Flous sans `ctx.filter` : la région est réduite en plusieurs passes puis remontée (`downUp`), ce qui approche un flou gaussien ; le pixelisé remonte sans lissage ; le dynamique superpose la région décalée le long de l'orientation. Le masque est la forme pleine légèrement réduite puis adoucie par `downUp`, d'où des bords fondus proportionnels à la zone.
 
 ## 5. Tests
 
-`node tests/test_fumee.mjs` : sert le dossier par HTTP, fabrique deux photos et une vidéo WebM dans le navigateur, puis en 390x844 (tactile) et 1400x900 : chargement, formats, zoom et déplacement du cadre, filtre et curseur de couleur, trois zones de flou, six calques, cinq éléments de cadre, saisie du texte à l'ajout, déplacement d'un calque à la souris, aimantation sur la grille et désactivation, export JPEG (nom et dimensions vérifiés), export de la fiche, reprise de la fiche dans une page vierge, extraction d'une image de vidéo. Captures dans `tests/captures/` (ignorées par git).
+`node tests/test_fumee.mjs` : sert le dossier par HTTP, fabrique deux photos et une vidéo WebM dans le navigateur, puis en 390x844 (tactile) et 1400x900 : chargement, formats, zoom et déplacement du cadre, filtre et curseur de couleur, trois zones de flou, six calques, cinq éléments de cadre, saisie du texte à l'ajout, déplacement d'un calque à la souris, aimantation sur la grille et désactivation, export JPEG (nom, dimensions et métadonnées vérifiés : la photo de test porte un EXIF de téléphone avec auteur, date et GPS, absents de l'export), export de la fiche, reprise de la fiche dans une page vierge, extraction d'une image de vidéo. Captures dans `tests/captures/` (ignorées par git).
 
 ## 6. Changelog
 
+- 0.3 (2026-10-29) : les photos exportées et les images extraites des vidéos ne contiennent plus aucune métadonnée d'origine (localisation, date, auteur, appareil) ; elles portent à la place les métadonnées ESAM (auteur, droits, description facultative), réglables dans l'onglet Export.
 - 0.2 (2026-10-28) : grille magnétique pour les calques (large, moyenne, fine ou désactivée) ; éléments de cadre : signature ESAM, montagne, biais, coin aux bandes ESAM, carte ; le réglage du calque choisi s'affiche en haut du panneau, la saisie du texte s'ouvre à l'ajout ou d'un double toucher ; le titre ne revient plus à la ligne tout seul, le texte a une largeur de zone réglable (poignée blanche).
 - 0.1 (2026-10-28) : première version : photos de la galerie, des fichiers ou d'un dossier de travail ; extraction d'images d'une vidéo ; cadre aux formats des réseaux ; couleurs et filtres ; flous doux, pixelisé, dynamique ; logo, titre, texte, légende, flèche, cercle ; export JPEG, partage, fiche de configuration JSON.
