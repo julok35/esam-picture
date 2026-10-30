@@ -157,6 +157,46 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   await page.click('[data-act="ldone"]');
   await page.screenshot({ path: path.join(caps, `${label}_calques.png`) });
 
+  // Zoom incrusté : loupe sur une zone de la photo (anneau déplacé à la souris, grossissement), puis photo de la caméra zoom incrustée
+  await page.click('[data-addl="zoom"]');
+  await page.waitForTimeout(300);
+  cf = await cfgOf();
+  let zl = cf.calques.find(l => l.type === "zoom");
+  check(zl && zl.src === null && zl.zone.x > 0 && zl.zone.x < 1 && (await page.$$('[data-csel]')).length === 12, "loupe ajoutée sur une zone de la photo");
+  await page.click('[data-lsub="zone"]');
+  await page.waitForTimeout(200);
+  const b7 = await page.locator("#cv").boundingBox();
+  await page.mouse.move(b7.x + b7.width / 2, b7.y + b7.height / 2); await page.mouse.down();
+  await page.mouse.move(b7.x + b7.width / 2 - 40, b7.y + b7.height / 2 - 30, { steps: 5 }); await page.mouse.up();
+  await page.waitForTimeout(300);
+  const z0 = zl.zone;
+  cf = await cfgOf(); zl = cf.calques.find(l => l.type === "zoom");
+  check(zl.zone.x < z0.x && zl.zone.y < z0.y, `zone grossie déplacée à la souris (x ${z0.x.toFixed(3)} -> ${zl.zone.x.toFixed(3)})`);
+  await page.$eval('input[data-lgross]', el => { el.value = 4; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await page.waitForTimeout(500);
+  cf = await cfgOf(); zl = cf.calques.find(l => l.type === "zoom");
+  check(zl.zone.w < z0.w, `grossissement 4x (largeur de la zone ${z0.w.toFixed(3)} -> ${zl.zone.w.toFixed(3)})`);
+  await page.screenshot({ path: path.join(caps, `${label}_zoom_zone.png`) });
+  await page.click('[data-lsrc]:not([data-lsrc="self"])');
+  await page.waitForTimeout(300);
+  cf = await cfgOf(); zl = cf.calques.find(l => l.type === "zoom");
+  check(zl.src === "IMG_portrait.jpg" && zl.zone.w <= 1, "photo de la caméra zoom incrustée dans la loupe");
+  check((await page.textContent("#film")).includes("Loupe"), "la pellicule signale la photo incrustée");
+  await page.click('[data-lsub="contenu"]');
+  await page.waitForTimeout(200);
+  const b8 = await page.locator("#cv").boundingBox();
+  await page.mouse.move(b8.x + b8.width * 0.74, b8.y + b8.height * 0.74); await page.mouse.down();
+  await page.mouse.move(b8.x + b8.width * 0.74, b8.y + b8.height * 0.74 - 30, { steps: 5 }); await page.mouse.up();   // la photo portrait tient en largeur : on la fait glisser vers le haut
+  await page.waitForTimeout(300);
+  cf = await cfgOf();
+  const zl2 = cf.calques.find(l => l.type === "zoom");
+  check(zl2.zone.y > zl.zone.y, `photo cadrée dans la loupe à la souris (y ${zl.zone.y.toFixed(3)} -> ${zl2.zone.y.toFixed(3)})`);
+  await page.fill('input[data-lfield="etiquette"]', "Zoom");
+  await page.click('[data-lforme="rect"]');
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: path.join(caps, `${label}_zoom_photo.png`) });
+  await page.click('[data-act="ldone"]');
+
   // Montage : bandeaux (deux bandes, cadrage de la deuxième à la souris), puis superposition avec fenêtre
   await page.click('[data-tab="montage"]');
   await page.click('[data-mmode="bandes"]');
@@ -180,6 +220,13 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   await page.waitForTimeout(300);
   cf = await cfgOf();
   check(cf.montage.mode === "fusion" && cf.montage.fusion && cf.montage.fusion.src === "IMG_portrait.jpg", "superposition : la deuxième photo est posée sur la première");
+  check((await page.textContent(".slot:not(.dessus)")).includes("DJI_0001.jpg") && (await page.textContent(".slot.dessus")).includes("IMG_portrait.jpg"), "panneau : qui est dessous, qui est dessus");
+  check((await page.textContent("#film")).includes("Dessous") && (await page.textContent("#film")).includes("Dessus"), "pellicule : badges Dessous et Dessus");
+  await page.click('[data-mview="dessus"]');
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: path.join(caps, `${label}_montage_fusion_dessus.png`) });
+  check((await page.getAttribute('[data-mview="dessus"]', "aria-pressed")) === "true", "aperçu « le dessus seul »");
+  await page.click('[data-mview="deux"]');
   await page.$eval('input[data-mop]', el => { el.value = 60; el.dispatchEvent(new Event("input", { bubbles: true })); });
   const b5 = await page.locator("#cv").boundingBox();
   await page.mouse.move(b5.x + b5.width / 2, b5.y + b5.height / 2); await page.mouse.down();
@@ -204,6 +251,15 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   const dimsm = await page.evaluate(async b64 => new Promise(r => { const i = new Image(); i.onload = () => r([i.naturalWidth, i.naturalHeight]); i.src = "data:image/jpeg;base64," + b64; }), fs.readFileSync(outm).toString("base64"));
   check(dlm.suggestedFilename() === "DJI_0001_portrait_montage.jpg" && dimsm[0] === 1080 && dimsm[1] === 1350, `montage exporté ${dlm.suggestedFilename()} (${dimsm.join("x")})`);
   await page.click('[data-tab="montage"]');
+  await page.click('[data-act="mswap"]');
+  await page.waitForTimeout(400);
+  const cfImg = await page.evaluate(() => JSON.parse(localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith("esam-picture:IMG")))));
+  check((await page.textContent("#pname")).includes("IMG_portrait.jpg") && cfImg.montage.mode === "fusion" && cfImg.montage.fusion.src === "DJI_0001.jpg" && cfImg.montage.fusion.mode === "eclaircir", "inversion : IMG_portrait.jpg dessous, DJI_0001.jpg dessus, mode conservé");
+  await page.screenshot({ path: path.join(caps, `${label}_montage_inverse.png`) });
+  await page.click('[data-act="mswap"]');
+  await page.waitForTimeout(400);
+  cf = await cfgOf();
+  check((await page.textContent("#pname")).includes("DJI_0001.jpg") && cf.montage.mode === "fusion" && cf.montage.fusion.src === "IMG_portrait.jpg", "inversion dans l'autre sens");
   await page.click('[data-mmode="aucun"]');
   await page.waitForTimeout(300);
 
@@ -227,7 +283,9 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   const [dl2] = await Promise.all([page.waitForEvent("download"), page.click('[data-act="fiche"]')]);
   const fichePath = path.join(caps, `${label}_fiche.json`); await dl2.saveAs(fichePath);
   const fiche = JSON.parse(fs.readFileSync(fichePath, "utf8"));
-  check(fiche.format === "portrait" && fiche.flous.length === 3 && fiche.calques.length === 11 && fiche.filtre === "esam", "fiche JSON complète");
+  check(fiche.format === "portrait" && fiche.flous.length === 3 && fiche.calques.length === 12 && fiche.filtre === "esam", "fiche JSON complète");
+  const fz = fiche.calques.find(l => l.type === "zoom");
+  check(fz && fz.src === "IMG_portrait.jpg" && fz.forme === "rect" && fz.etiquette === "Zoom", "fiche : zoom incrusté conservé");
   check(fiche.montage.mode === "aucun" && fiche.montage.bandes.length === 2 && fiche.montage.fusion.src === "IMG_portrait.jpg", "fiche : montage conservé (bandes et superposition)");
 
   // Reprise : nouvelle page sans localStorage, chargement de la photo puis de la fiche
@@ -238,7 +296,7 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   await page2.setInputFiles("#ficheIn", [{ name: "DJI_0001.jpg.esam.json", mimeType: "application/json", buffer: fs.readFileSync(fichePath) }]);
   await page2.waitForTimeout(500);
   await page2.click('[data-tab="calques"]');
-  check((await page2.$$('[data-csel]')).length === 11, "fiche reprise : onze calques retrouvés");
+  check((await page2.$$('[data-csel]')).length === 12, "fiche reprise : douze calques retrouvés");
   check((await page2.textContent("#tagFmt")).includes("1080 x 1350"), "fiche reprise : format portrait");
   await page2.screenshot({ path: path.join(caps, `${label}_reprise.png`) });
 
