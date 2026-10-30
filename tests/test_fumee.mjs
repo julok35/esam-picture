@@ -157,6 +157,24 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   await page.click('[data-act="ldone"]');
   await page.screenshot({ path: path.join(caps, `${label}_calques.png`) });
 
+  // Poignées blanches : largeur (bord droit) et hauteur (bord bas) du cercle, resté au centre, à l'échelle 1
+  await page.click('button.sel:has-text("Cercle")');
+  await page.waitForTimeout(200);
+  const bc = await page.locator("#cv").boundingBox(), ccx = bc.x + bc.width / 2, ccy = bc.y + bc.height / 2;
+  await page.mouse.move(bc.x + bc.width * (540 + 219.5) / 1080, ccy); await page.mouse.down();
+  await page.mouse.move(bc.x + bc.width * (540 + 219.5) / 1080 + 40, ccy, { steps: 5 }); await page.mouse.up();
+  await page.waitForTimeout(300);
+  await page.mouse.move(ccx, bc.y + bc.height * (675 + 170) / 1350); await page.mouse.down();
+  await page.mouse.move(ccx, bc.y + bc.height * (675 + 170) / 1350 + 30, { steps: 5 }); await page.mouse.up();
+  await page.waitForTimeout(300);
+  cf = await cfgOf();
+  const cer = cf.calques.find(l => l.type === "cercle");
+  check(cer.ar > 1.35 && cer.ey > 1.05 && cer.s === 1, `cercle élargi puis étiré en hauteur par ses poignées (ar=${cer.ar.toFixed(2)}, ey=${cer.ey.toFixed(2)})`);
+  check((await page.$$('input[data-lar], input[data-ley]')).length === 2, "curseurs Largeur et Hauteur du cercle");
+  await page.click('button.sel:has-text("Titre")');
+  check((await page.$$('input[data-lex], input[data-ley]')).length === 2, "curseurs d'étirement du titre");
+  await page.click('[data-act="ldone"]');
+
   // Zoom incrusté : loupe sur une zone de la photo (anneau déplacé à la souris, grossissement), puis photo de la caméra zoom incrustée
   await page.click('[data-addl="zoom"]');
   await page.waitForTimeout(300);
