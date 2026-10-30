@@ -14,6 +14,7 @@ Outil de l'ESAM (Equipe de Secours Animalier en Montagne), dans la lignée de [e
 | Choisir les photos | Galerie du téléphone ou fichiers (« Choisir des photos ou vidéos »), ou dossier de travail sur ordinateur (Chrome, Edge). |
 | Extraire d'une vidéo | Une vidéo choisie apparaît dans la pellicule ; lecture, curseur, pas d'une image ou d'une seconde, « Capturer » ajoute l'image en pleine résolution comme photo. |
 | Cadre | Format de publication (carré 1:1, portrait 4:5, story 9:16, paysage 1.91:1, large 16:9, original), rotation, recadrage en glissant, pinçant ou tirant un coin. |
+| Montage | Bandeaux : vue large, zoom et infrarouge sur une même image, côte à côte ou empilés, chaque bande cadrée au doigt avec une étiquette. Superposition : la photo infrarouge posée en transparence sur la photo et alignée dessus (zoom, rotation, opacité, modes fondu, éclaircir, lumière, chaleur), limitée au besoin à une fenêtre aux bords fondus (réalité augmentée). |
 | Couleur | Luminosité, contraste, saturation, température, vignettage ; filtres (ESAM, noir et blanc, chaud, froid, vif, doux, vintage). |
 | Flous | Zones ovales ou rectangulaires, trois rendus (doux, pixelisé, dynamique), trois intensités, bords fondus pour rester discrets ; déplaçables, redimensionnables, orientables. |
 | Calques | Logo ESAM (cartouche ou logo seul), titre, texte, légende (nom de l'animal, date, secteur), flèche et cercle « au crayon ». Chaque calque se déplace, s'agrandit et s'oriente au doigt, à la souris ou par curseurs. |

@@ -71,6 +71,9 @@ textarea.field{min-height:64px;resize:vertical}
 .chip.s[aria-pressed="true"]{background:var(--yellow);color:#171618;border-color:#171618}
 .chip.add{border-style:dashed}
 .chip small{display:block;font-weight:500;font-size:11px;color:inherit;opacity:.8}
+.chip.pic{display:inline-flex;align-items:center;gap:8px;padding:3px 12px 3px 3px}
+.chip.pic img{width:32px;height:32px;border-radius:16px;object-fit:cover;display:block;background:var(--soft)}
+.chip.pic span{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sw{width:30px;height:30px;border-radius:50%;border:2px solid var(--line);padding:0}
 .sw[aria-pressed="true"]{border-color:var(--ink);box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--ink)}
 .row{display:flex;gap:8px;align-items:center}
@@ -195,6 +198,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
     </div>
     <div class="tabs" role="tablist" id="tabs">
       <button type="button" class="tab" role="tab" data-tab="cadre" aria-selected="true">Cadre</button>
+      <button type="button" class="tab" role="tab" data-tab="montage">Montage</button>
       <button type="button" class="tab" role="tab" data-tab="couleur">Couleur</button>
       <button type="button" class="tab" role="tab" data-tab="flous">Flous</button>
       <button type="button" class="tab" role="tab" data-tab="calques">Calques</button>
@@ -236,7 +240,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 /* Photos ESAM : préparation d'images pour les réseaux sociaux. Un seul fichier, pas de build, ES2017.
    Sections : utils, modèle, formats, chargement, dossier de travail, rendu (base, couleur, flous, calques),
    aperçu et interactions, panneaux, export, démarrage. Voir docs/ARCHITECTURE.md. */
-const APP_VERSION = "0.3";
+const APP_VERSION = "0.4";
 const $ = id => document.getElementById(id);
 
 /* ---------- utils ---------- */
@@ -286,9 +290,10 @@ function wrapLines(ctx, txt, maxW){
      format, cadre {x, y, w, h} en fraction de l'image source, rotation (0/90/180/270),
      couleur {lum, contraste, sat, temp, vignette} de -100 à 100, filtre,
      flous [{id, forme, mode, force, x, y, w, h}] en fraction de l'image source (centre et taille),
-     calques [{id, type, x, y, s, rot, ...}] : x, y en fraction de l'image de sortie, s = échelle, rot en degrés. */
+     calques [{id, type, x, y, s, rot, ...}] : x, y en fraction de l'image de sortie, s = échelle, rot en degrés,
+     montage {mode, sens, sep, sepCouleur, bandes, fusion} : composition avec d'autres photos chargées (voir « rendu : montage »). */
 const pendingFiches = {};   // fiches importées avant leurs photos, par nom de fichier
-const S = {photos:[], sel:null, tab:"cadre", mode:"calques", dirHandle:null, dirWritable:false, fsel:null, csel:null, secteurs:[]};
+const S = {photos:[], sel:null, tab:"cadre", mode:"calques", dirHandle:null, dirWritable:false, fsel:null, csel:null, msel:0, msub:"calque", secteurs:[]};
 const FORMATS = [
   {id:"carre", nom:"Carré 1:1", res:"Instagram, Facebook, LinkedIn", w:1080, h:1080},
   {id:"portrait", nom:"Portrait 4:5", res:"Instagram, Facebook", w:1080, h:1350},
@@ -324,7 +329,7 @@ function srcW(p){ return p.cfg.rotation % 180 ? p.h : p.w; }
 function srcH(p){ return p.cfg.rotation % 180 ? p.w : p.h; }
 function newCfg(name){
   return {version:1, app:"esam-picture", fichier:name, format:"carre", cadre:null, rotation:0,
-    couleur:{lum:0, contraste:0, sat:0, temp:0, vignette:0}, filtre:"aucun", flous:[], calques:[], grille:gridPref(), meta:readMeta(metaPref())};
+    couleur:{lum:0, contraste:0, sat:0, temp:0, vignette:0}, filtre:"aucun", flous:[], calques:[], montage:newMontage(), grille:gridPref(), meta:readMeta(metaPref())};
 }
 /* grille magnétique des calques : réglage de la fiche, la dernière valeur choisie sert de défaut aux nouvelles photos */
 function readGrille(g){ return {aimant:!g || g.aimant !== false, n:g && GRILLES.indexOf(+g.n) >= 0 ? +g.n : 12}; }
@@ -339,25 +344,23 @@ function readMeta(m){
 }
 function metaPref(){ try { const m = JSON.parse(localStorage.getItem("esam-picture:meta") || "null"); return m ? {auteur:m.auteur, droits:m.droits} : null; } catch(e){ return null; } }
 function noPriv(k, v){ return k.charAt(0) === "_" ? undefined : v; }   // _box et autres champs de travail restent hors de la fiche
-/* cadre maximal centré pour le format courant */
-function maxCadre(p){
-  const f = fmtOf(p.cfg), sw = srcW(p), sh = srcH(p);
-  if(!f.w) return {x:0, y:0, w:1, h:1};
-  const r = f.w/f.h, sr = sw/sh;
+/* cadre maximal centré (fraction d'une source sw x sh) pour un ratio r donné */
+function maxCadreFor(sw, sh, r){
+  const sr = sw/sh;
   let w = 1, h = 1;
   if(sr > r) w = r/sr; else h = sr/r;
   return {x:(1 - w)/2, y:(1 - h)/2, w:w, h:h};
 }
-function fixCadre(p){
-  const c = p.cfg.cadre, m = maxCadre(p);
-  if(!c || !(c.w > 0) || !(c.h > 0)){ p.cfg.cadre = m; return; }
-  const f = fmtOf(p.cfg);
-  if(!f.w){ p.cfg.cadre = m; return; }
-  // ratio imposé par le format, taille bornée par l'image, position bornée
-  const sw = srcW(p), sh = srcH(p), r = f.w/f.h;
+/* impose le ratio r à un cadre (modifié sur place), taille bornée par l'image, position bornée ; cadre maximal si absent */
+function fitCadre(c, sw, sh, r){
+  const m = maxCadreFor(sw, sh, r);
+  if(!c || !(c.w > 0) || !(c.h > 0)) return m;
   let w = clamp(c.w, 0.08, m.w); let h = w*sw/sh/r; if(h > m.h){ h = m.h; w = h*sh/sw*r; }
   c.w = w; c.h = h; c.x = clamp(c.x, 0, 1 - w); c.y = clamp(c.y, 0, 1 - h);
+  return c;
 }
+function maxCadre(p){ const f = fmtOf(p.cfg); return f.w ? maxCadreFor(srcW(p), srcH(p), f.w/f.h) : {x:0, y:0, w:1, h:1}; }
+function fixCadre(p){ const f = fmtOf(p.cfg); p.cfg.cadre = f.w ? fitCadre(p.cfg.cadre, srcW(p), srcH(p), f.w/f.h) : {x:0, y:0, w:1, h:1}; }
 function selected(){ return S.photos.find(p => p.id === S.sel) || null; }
 function cfgKey(p){ return `esam-picture:${p.key}`; }
 function persist(p){
@@ -383,6 +386,7 @@ function applyCfg(p, d){
   c.flous = (Array.isArray(d.flous) ? d.flous : []).map(z => ({id:z.id || uid(), forme:z.forme === "rect" ? "rect" : "ellipse", mode:MODES_FLOU.some(m => m[0] === z.mode) ? z.mode : "doux",
     force:clamp(+z.force || 2, 1, 3), x:clamp(+z.x || 0.5, 0, 1), y:clamp(+z.y || 0.5, 0, 1), w:clamp(+z.w || 0.2, 0.02, 1), h:clamp(+z.h || 0.2, 0.02, 1), angle:+z.angle || 0}));
   c.calques = (Array.isArray(d.calques) ? d.calques : []).filter(l => TYPES[l.type]).map(l => Object.assign(defLayer(l.type), l.type === "texte" && l.larg == null ? {larg:0.9} : {}, l, {id:l.id || uid(), x:clamp(+l.x || 0.5, -0.2, 1.2), y:clamp(+l.y || 0.5, -0.2, 1.2), s:clamp(+l.s || 1, 0.2, 5), rot:+l.rot || 0}));
+  c.montage = readMontage(d.montage);
   if(d.grille && typeof d.grille === "object") c.grille = readGrille(d.grille);
   if(d.meta && typeof d.meta === "object") c.meta = readMeta(d.meta);
   p.cfg = c; fixCadre(p); p.cache = {};
@@ -583,10 +587,8 @@ $("ficheIn").addEventListener("change", async e => {
 /* ---------- rendu : image de base (cadre + couleur) ----------
    baseCanvas(p, cw, ch) : la photo tournée, recadrée selon cfg.cadre, mise à l'échelle cw x ch, puis couleurs et filtre.
    Mise en cache par photo (clé = format, cadre, rotation, couleur, filtre, taille). */
-function cropRect(p){
-  const c = p.cfg.cadre, sw = srcW(p), sh = srcH(p);
-  return {x:c.x*sw, y:c.y*sh, w:c.w*sw, h:c.h*sh};
-}
+function cropRectOf(q, c){ const sw = srcW(q), sh = srcH(q); return {x:c.x*sw, y:c.y*sh, w:c.w*sw, h:c.h*sh}; }
+function cropRect(p){ return cropRectOf(p, p.cfg.cadre); }
 /* dessine la source tournée (cfg.rotation) dans ctx, repère = image tournée (srcW x srcH), à l'échelle k */
 function drawRotated(ctx, p, k){
   const r = p.cfg.rotation || 0;
@@ -631,24 +633,208 @@ function applyColor(canvas, c){
   }
   ctx.putImageData(id, 0, 0);
 }
+/* photo q recadrée selon un cadre (fraction de sa source tournée), mise à l'échelle w x h, avec ses couleurs */
+function cropCanvas(q, cadre, w, h){
+  const cr = cropRectOf(q, cadre), c = mkCanvas(w, h), ctx = c.getContext("2d"), k = w/cr.w;
+  ctx.save(); ctx.translate(-cr.x*k, -cr.y*k); drawRotated(ctx, q, k); ctx.restore();
+  applyColor(c, colorParams(q.cfg));
+  return c;
+}
 function baseKey(p, cw, ch){ const c = p.cfg; return JSON.stringify([c.format, c.cadre, c.rotation, c.couleur, c.filtre, cw, ch]); }
-function baseCanvas(p, cw, ch){
+/* la photo elle-même (cadre et couleurs de sa fiche), cache p.cache.own */
+function ownCanvas(p, cw, ch){
   const key = baseKey(p, cw, ch);
+  if(p.cache.own && p.cache.ownKey === key) return p.cache.own;
+  const c = cropCanvas(p, p.cfg.cadre, cw, ch);
+  p.cache.own = c; p.cache.ownKey = key;
+  return c;
+}
+/* image de base : la photo seule, ou le montage (bandeaux, superposition) composé avec d'autres photos ; cache p.cache.base */
+function baseCanvas(p, cw, ch){
+  fixMontage(p);
+  const key = baseKey(p, cw, ch) + montKey(p);
   if(p.cache.base && p.cache.baseKey === key) return p.cache.base;
-  const cr = cropRect(p), c = mkCanvas(cw, ch), ctx = c.getContext("2d");
-  const k = cw/cr.w;
-  ctx.save(); ctx.translate(-cr.x*k, -cr.y*k); drawRotated(ctx, p, k); ctx.restore();
-  applyColor(c, colorParams(p.cfg));
+  const c = montageCanvas(p, cw, ch) || ownCanvas(p, cw, ch);
   p.cache.base = c; p.cache.baseKey = key; p.cache.blur = null;
   return c;
 }
+
+/* ---------- rendu : montage (bandeaux, superposition) ----------
+   Le montage compose l'image de base à partir de plusieurs photos chargées (vue large, zoom, infrarouge d'un même vol).
+   Il est décrit dans cfg.montage de la photo « maître » ; les autres photos sont désignées par leur nom de fichier
+   (src ; null = la photo elle-même) et rendues avec les couleurs de leur propre fiche.
+   - bandes : bandes égales côte à côte (sens v) ou empilées (sens h), chacune avec sa photo, son cadre (fraction de la
+     source de cette photo, ratio de la bande) et une étiquette ; séparateur sep (unités u) de couleur sepCouleur.
+   - fusion : une photo posée sur la base comme un calque : x, y en fraction de la sortie, s = largeur / largeur de sortie,
+     rot en degrés, op opacité, mode de fusion (fondu, eclaircir, ecran, chaleur avec seuil), et une fenêtre facultative
+     (forme non|rect|ellipse ; x, y, w, h en fraction de la photo superposée ; bords fondus ; contour).
+   Les photos manquantes (fiche reprise sans elles) sont remplacées par un panneau « Photo manquante ». */
+const MODES_MONTAGE = [["aucun","Photo seule"],["bandes","Bandeaux"],["fusion","Superposition"]];
+const FUSIONS = [["fondu","Fondu"],["eclaircir","Éclaircir"],["ecran","Lumière"],["chaleur","Chaleur"]];
+const BLEND = {fondu:"source-over", eclaircir:"lighten", ecran:"screen", chaleur:"source-over"};
+const KIND_LABEL = {large:"Vue large", zoom:"Zoom", ir:"Infrarouge"}, KIND_ORDER = {large:0, zoom:1, ir:2, "":3};
+/* nommage DJI (Mavic 3T, Matrice) : _W vue large, _Z zoom, _T thermique ; sinon rien */
+function kindOf(name){ const m = /_(W|V|Z|T|THRM|IR)\.(jpe?g|png|webp)$/i.exec(name || ""); if(!m) return ""; const k = m[1].toUpperCase(); return k === "W" || k === "V" ? "large" : k === "Z" ? "zoom" : "ir"; }
+function stemOf(name){ return clean(name).replace(/_(W|V|Z|T|THRM|IR)\.(jpe?g|png|webp)$/i, "").replace(/\.[^.]+$/, ""); }
+function newMontage(){ return {mode:"aucun", sens:"v", sep:6, sepCouleur:"#FFFFFF", bandes:[], fusion:null}; }
+function newFusion(){ return {src:null, x:0.5, y:0.5, s:1, rot:0, op:55, mode:"fondu", seuil:60, fenetre:{forme:"non", x:0.5, y:0.5, w:0.5, h:0.5, fondu:true, contour:""}}; }
+function isHex(s){ return /^#[0-9a-f]{6}$/i.test(s || ""); }
+function readMontage(d){
+  const m = newMontage(); if(!d || typeof d !== "object") return m;
+  if(MODES_MONTAGE.some(x => x[0] === d.mode)) m.mode = d.mode;
+  m.sens = d.sens === "h" ? "h" : "v"; m.sep = clamp(+d.sep || 0, 0, 40); if(isHex(d.sepCouleur)) m.sepCouleur = d.sepCouleur;
+  m.bandes = (Array.isArray(d.bandes) ? d.bandes : []).slice(0, 4).map(b => ({src:typeof b.src === "string" ? clean(b.src) : null, etiquette:clean(b.etiquette || "").slice(0, 40),
+    cadre:b.cadre && typeof b.cadre === "object" ? {x:+b.cadre.x || 0, y:+b.cadre.y || 0, w:+b.cadre.w || 0, h:+b.cadre.h || 0} : null}));
+  if(d.fusion && typeof d.fusion === "object"){
+    const f = d.fusion, n = newFusion(), w = f.fenetre && typeof f.fenetre === "object" ? f.fenetre : {};
+    n.src = typeof f.src === "string" ? clean(f.src) : null;
+    n.x = clamp(+f.x || 0.5, -0.5, 1.5); n.y = clamp(+f.y || 0.5, -0.5, 1.5); n.s = clamp(+f.s || 1, 0.1, 8); n.rot = clamp(+f.rot || 0, -180, 180);
+    n.op = clamp(f.op == null ? 55 : +f.op, 0, 100); if(FUSIONS.some(x => x[0] === f.mode)) n.mode = f.mode; n.seuil = clamp(f.seuil == null ? 60 : +f.seuil, 0, 100);
+    n.fenetre = {forme:w.forme === "rect" || w.forme === "ellipse" ? w.forme : "non", x:clamp(+w.x || 0.5, 0, 1), y:clamp(+w.y || 0.5, 0, 1), w:clamp(+w.w || 0.5, 0.05, 1.5), h:clamp(+w.h || 0.5, 0.05, 1.5), fondu:w.fondu !== false, contour:isHex(w.contour) ? w.contour : ""};
+    m.fusion = n;
+  }
+  return m;
+}
+function montMode(p){ return (p.cfg.montage || {}).mode || "aucun"; }
+function isBandes(p){ return montMode(p) === "bandes"; }
+function isMontage(p){ return montMode(p) !== "aucun"; }
+/* la photo désignée par src (null = p) ; null si elle n'est pas chargée */
+function photoOf(p, src){ if(src == null) return p; return S.photos.find(x => x.path === src) || S.photos.find(x => x.name === src) || null; }
+function srcOf(p, q){ return q === p ? null : q.path; }
+/* photos du même vol (DJI_xxx_W, _Z, _T), triées vue large, zoom, infrarouge */
+function siblings(p){ const st = stemOf(p.name); return S.photos.filter(q => q !== p && kindOf(q.name) && stemOf(q.name) === st).sort((a, b) => KIND_ORDER[kindOf(a.name)] - KIND_ORDER[kindOf(b.name)]); }
+function initBandes(p, m){
+  let list = [p].concat(siblings(p)).slice(0, 3);
+  if(list.length < 2) list = [p].concat(S.photos.filter(q => q !== p).slice(0, 2));
+  if(list.length < 2) list.push(p);
+  if(list.every(q => kindOf(q.name))) list.sort((a, b) => KIND_ORDER[kindOf(a.name)] - KIND_ORDER[kindOf(b.name)]);
+  m.bandes = list.map(q => ({src:srcOf(p, q), cadre:null, etiquette:KIND_LABEL[kindOf(q.name)] || ""}));
+}
+function defaultFusionSrc(p){
+  const q = siblings(p).find(x => kindOf(x.name) === "ir") || S.photos.find(x => x !== p && kindOf(x.name) === "ir") || S.photos.find(x => x !== p);
+  return q ? srcOf(p, q) : null;
+}
+/* rectangles des bandes dans un repère cw x ch (ratio non arrondi, pour les cadres) */
+function paneRects(m, n, cw, ch){
+  const u = cw/1080, sep = Math.round((m.sep || 0)*u), vert = m.sens !== "h", total = vert ? cw : ch, size = (total - sep*(n - 1))/n, out = [];
+  for(let i = 0; i < n; i++){
+    const a = Math.round(i*(size + sep)), b = Math.round(i*(size + sep) + size);
+    out.push(vert ? {x:a, y:0, w:b - a, h:ch, ratio:size/ch} : {x:0, y:a, w:cw, h:b - a, ratio:cw/size});
+  }
+  return out;
+}
+/* normalise le montage avant un rendu : bandes initialisées, cadres au ratio de leur bande, superposition présente */
+function fixMontage(p){
+  const m = p.cfg.montage; if(!m) return;
+  if(m.mode === "bandes"){
+    if(m.bandes.length < 2) initBandes(p, m);
+    const o = outSize(p), rects = paneRects(m, m.bandes.length, o.W, o.H);
+    m.bandes.forEach((b, i) => { const q = photoOf(p, b.src); if(q) b.cadre = fitCadre(b.cadre, srcW(q), srcH(q), rects[i].ratio); });
+  }
+  if(m.mode === "fusion" && !m.fusion){ m.fusion = newFusion(); m.fusion.src = defaultFusionSrc(p); }
+}
+function refsOf(p){
+  const m = p.cfg.montage; if(!m) return [];
+  if(m.mode === "bandes") return m.bandes.map(b => photoOf(p, b.src));
+  if(m.mode === "fusion" && m.fusion) return [photoOf(p, m.fusion.src)];
+  return [];
+}
+function montKey(p){ if(!isMontage(p)) return ""; return JSON.stringify([p.cfg.montage, refsOf(p).map(q => q ? [q.id, q.cfg.rotation, q.cfg.couleur, q.cfg.filtre] : null)]); }
+/* petit cache des rendus intermédiaires du montage (bandes, photo superposée), dans le cache de la photo maître */
+function cached(p, key, make){
+  const c = p.cache.preps || (p.cache.preps = {});
+  if(c[key]) return c[key];
+  const ks = Object.keys(c); if(ks.length > 8) ks.forEach(k => { delete c[k]; });
+  return c[key] = make();
+}
+function prepCanvas(p, q, maxSide){
+  return cached(p, JSON.stringify(["prep", q.id, q.cfg.rotation, q.cfg.couleur, q.cfg.filtre, maxSide]), () => {
+    const sw = srcW(q), sh = srcH(q), k = Math.min(1, maxSide/Math.max(sw, sh)), c = mkCanvas(sw*k, sh*k);
+    drawRotated(c.getContext("2d"), q, k); applyColor(c, colorParams(q.cfg)); return c;
+  });
+}
+/* mode chaleur : seuls les pixels plus clairs que le seuil restent (rampe douce), pour faire ressortir les points chauds */
+function heatCanvas(p, q, prep, seuil){
+  return cached(p, JSON.stringify(["chaleur", q.id, q.cfg.rotation, q.cfg.couleur, q.cfg.filtre, prep.width, seuil]), () => {
+    const c = mkCanvas(prep.width, prep.height), x = c.getContext("2d"); x.drawImage(prep, 0, 0);
+    const id = x.getImageData(0, 0, c.width, c.height), d = id.data, t = seuil/100*255, soft = 26;
+    for(let i = 0; i < d.length; i += 4){ const l = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2]; d[i+3] = clamp((l - t + soft)/(2*soft), 0, 1)*255; }
+    x.putImageData(id, 0, 0); return c;
+  });
+}
+function paneCanvas(p, q, cadre, w, h){
+  return cached(p, JSON.stringify(["bande", q.id, q.cfg.rotation, cadre, q.cfg.couleur, q.cfg.filtre, w, h]), () => cropCanvas(q, cadre, w, h));
+}
+function placeholder(ctx, r, name, u){
+  ctx.save(); ctx.fillStyle = "#3a3b40"; ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#fff"; ctx.font = `700 ${28*u}px ${MONT}`;
+  ctx.fillText("Photo manquante", r.x + r.w/2, r.y + r.h/2 - 18*u, r.w - 20*u);
+  ctx.fillStyle = "#A8C8FB"; ctx.font = `${22*u}px ${MONT}`; ctx.fillText(clean(name || ""), r.x + r.w/2, r.y + r.h/2 + 18*u, r.w - 20*u);
+  ctx.restore();
+}
+function etiquette(ctx, r, txt, u){
+  const fs = 34*u, px = 16*u, py = 10*u, mg = 18*u, bar = 6*u;
+  ctx.save(); ctx.font = `${fs}px ${ANTON}`;
+  const tw = Math.min(ctx.measureText(txt).width, r.w - 2*mg - 2*px - bar - 8*u), w = tw + 2*px + bar + 8*u, h = fs*1.2 + 2*py, x = r.x + mg, y = r.y + r.h - mg - h;
+  ctx.fillStyle = "rgba(23,22,24,.78)"; rRound(ctx, x, y, w, h, 8*u); ctx.fill();
+  ctx.fillStyle = "#F9DD10"; ctx.fillRect(x + px*0.6, y + py*0.8, bar, h - py*1.6);
+  ctx.fillStyle = "#fff"; ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.fillText(txt, x + px*0.6 + bar + 8*u, y + h/2 + fs*0.05, tw);
+  ctx.restore();
+}
+function drawBandes(ctx, p, m, cw, ch){
+  const rects = paneRects(m, m.bandes.length, cw, ch), u = cw/1080;
+  ctx.fillStyle = m.sepCouleur || "#fff"; ctx.fillRect(0, 0, cw, ch);
+  m.bandes.forEach((b, i) => {
+    const r = rects[i], q = photoOf(p, b.src);
+    if(q && b.cadre) ctx.drawImage(paneCanvas(p, q, b.cadre, r.w, r.h), r.x, r.y); else placeholder(ctx, r, b.src, u);
+    if(b.etiquette) etiquette(ctx, r, b.etiquette, u);
+  });
+}
+/* boîte de la photo superposée dans un repère o (W x H) : centre, demi-tailles, rotation, taille dessinée ow x oh */
+function fusionBox(p, f, o){
+  const q = photoOf(p, f.src), ar = q ? srcW(q)/srcH(q) : 4/3, ow = o.W*f.s, oh = ow/ar;
+  return {cx:f.x*o.W, cy:f.y*o.H, hw:ow/2, hh:oh/2, rot:(f.rot || 0)*Math.PI/180, ow:ow, oh:oh};
+}
+function fenetreBox(p, f, o){
+  const b = fusionBox(p, f, o), w = f.fenetre, c = Math.cos(b.rot), s = Math.sin(b.rot), lx = (w.x - 0.5)*b.ow, ly = (w.y - 0.5)*b.oh;
+  return {cx:b.cx + lx*c - ly*s, cy:b.cy + lx*s + ly*c, hw:w.w*b.ow/2, hh:w.h*b.oh/2, rot:b.rot, ow:b.ow, oh:b.oh};
+}
+function shapePath(ctx, forme, cx, cy, w, h, u){
+  ctx.beginPath();
+  if(forme === "ellipse") ctx.ellipse(cx, cy, Math.max(1, w/2), Math.max(1, h/2), 0, 0, Math.PI*2); else rRound(ctx, cx - w/2, cy - h/2, Math.max(1, w), Math.max(1, h), 12*u);
+}
+function drawFusion(ctx, p, f, cw, ch){
+  const q = photoOf(p, f.src), u = cw/1080, box = fusionBox(p, f, {W:cw, H:ch}), w = f.fenetre || {forme:"non"};
+  const layer = mkCanvas(cw, ch), lx = layer.getContext("2d");
+  lx.translate(box.cx, box.cy); lx.rotate(box.rot); lx.imageSmoothingQuality = "high";
+  if(q){ let img = prepCanvas(p, q, 2*Math.max(cw, ch)); if(f.mode === "chaleur") img = heatCanvas(p, q, img, f.seuil); lx.drawImage(img, -box.ow/2, -box.oh/2, box.ow, box.oh); }
+  else placeholder(lx, {x:-box.ow/2, y:-box.oh/2, w:box.ow, h:box.oh}, f.src, u);
+  const fw = w.w*box.ow, fh = w.h*box.oh, fx = (w.x - 0.5)*box.ow, fy = (w.y - 0.5)*box.oh;
+  if(w.forme !== "non"){
+    // masque de la fenêtre, un peu réduit puis adouci par réductions successives (bords fondus)
+    const feather = w.fondu ? clamp(Math.min(fw, fh)*0.08, 2*u, 60*u) : 0, mk = mkCanvas(cw, ch), mx = mk.getContext("2d");
+    mx.translate(box.cx, box.cy); mx.rotate(box.rot); mx.fillStyle = "#000"; shapePath(mx, w.forme, fx, fy, fw - feather, fh - feather, u); mx.fill();
+    lx.setTransform(1, 0, 0, 1, 0, 0); lx.globalCompositeOperation = "destination-in"; lx.drawImage(feather ? downUp(mk, Math.max(1.5, feather/2), true) : mk, 0, 0);
+  }
+  ctx.save(); ctx.globalAlpha = clamp(f.op/100, 0, 1); ctx.globalCompositeOperation = BLEND[f.mode] || "source-over"; ctx.drawImage(layer, 0, 0); ctx.restore();
+  if(w.forme !== "non" && w.contour){ ctx.save(); ctx.translate(box.cx, box.cy); ctx.rotate(box.rot); ctx.lineWidth = 5*u; ctx.strokeStyle = w.contour; shapePath(ctx, w.forme, fx, fy, fw, fh, u); ctx.stroke(); ctx.restore(); }
+}
+function montageCanvas(p, cw, ch){
+  const m = p.cfg.montage; if(!m || m.mode === "aucun") return null;
+  const c = mkCanvas(cw, ch), ctx = c.getContext("2d");
+  if(m.mode === "bandes") drawBandes(ctx, p, m, cw, ch);
+  else { ctx.drawImage(ownCanvas(p, cw, ch), 0, 0); if(m.fusion) drawFusion(ctx, p, m.fusion, cw, ch); }
+  return c;
+}
+/* repère des zones de flou : la source (via le cadre) pour une photo seule ou une superposition, l'image de sortie pour des bandeaux */
+function cropRef(p){ return isBandes(p) ? {x:0, y:0, w:1, h:1} : p.cfg.cadre; }
 
 /* ---------- rendu : zones de flou ----------
    Zones en fraction de l'image source (centre x, y ; taille w, h ; angle en degrés) ; converties dans le repère de sortie.
    Trois rendus : doux (flou gaussien approché par réductions successives, bords fondus), pixelisé (mosaïque),
    dynamique (filé directionnel). Sans ctx.filter, pour marcher sur tous les navigateurs. */
 function zoneOut(z, p, cw, ch){
-  const c = p.cfg.cadre;
+  const c = cropRef(p);
   return {x:(z.x - c.x)/c.w*cw, y:(z.y - c.y)/c.h*ch, w:z.w/c.w*cw, h:z.h/c.h*ch};
 }
 function downUp(src, factor, smooth){
@@ -915,7 +1101,7 @@ let drawReq = 0;
 function draw(){ if(drawReq) return; drawReq = requestAnimationFrame(() => { drawReq = 0; drawNow(); }); }
 function drawNow(){
   const p = selected(); if(!p) return;
-  if(S.tab === "cadre") drawCropView(p); else drawOutView(p);
+  if(S.tab === "cadre" && !isBandes(p)) drawCropView(p); else drawOutView(p);   // en bandeaux, le cadrage se fait bande par bande sur la sortie
 }
 function hx(px){ return px/V.k; }   // taille en espace pour px pixels de canvas
 function handleStyle(ctx){
@@ -958,9 +1144,26 @@ function drawOutView(p){
     const l = p.cfg.calques.find(x => x.id === S.csel);
     if(S.tab === "calques" && G.act && gridOn(p)) drawGrid(ctx, p, o);
     if(l && l._box && S.tab === "calques") drawBox(ctx, {cx:l.x*o.W, cy:l.y*o.H, hw:l._box.w/2, hh:l._box.h/2, rot:(l.rot || 0)*Math.PI/180}, l.type !== "coin", hasWid(l));
+  } else if(S.tab === "montage"){
+    const m = p.cfg.montage, dpr = Math.min(2, window.devicePixelRatio || 1);
+    if(m.mode === "bandes"){
+      paneRects(m, m.bandes.length, o.W, o.H).forEach((r, i) => {
+        const sel = i === S.msel, lw = hx(sel ? 3 : 1.2);
+        ctx.save(); ctx.lineWidth = lw; ctx.strokeStyle = sel ? "#F9DD10" : "rgba(255,255,255,.7)"; ctx.setLineDash(sel ? [] : [hx(5), hx(4)]);
+        ctx.strokeRect(r.x + lw/2, r.y + lw/2, r.w - lw, r.h - lw);
+        const rr = hx(11*dpr), bx = r.x + r.w/2, by = r.y + rr*1.6;   // numéro en haut au centre de la bande (hors des étiquettes de la scène)
+        dot(ctx, bx, by, rr, sel ? "#F9DD10" : "#fff");
+        ctx.fillStyle = "#171618"; ctx.font = `700 ${hx(12*dpr)}px ${MONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(String(i + 1), bx, by);
+        ctx.restore();
+      });
+    } else if(m.mode === "fusion" && m.fusion){
+      const f = m.fusion, b = fusionBox(p, f, o), fen = f.fenetre && f.fenetre.forme !== "non";
+      ctx.save(); ctx.translate(b.cx, b.cy); ctx.rotate(b.rot); ctx.lineWidth = hx(1.2); ctx.strokeStyle = "rgba(255,255,255,.7)"; ctx.setLineDash([hx(5), hx(4)]); ctx.strokeRect(-b.hw, -b.hh, b.hw*2, b.hh*2); ctx.restore();
+      if(fen && S.msub === "fenetre") drawBox(ctx, fenetreBox(p, f, o), false, false); else drawBox(ctx, b, true, false);
+    }
   }
   $("tagFmt").textContent = `${fmtOf(p.cfg).nom} · ${o.W} x ${o.H}`;
-  $("tagMode").textContent = S.tab === "flous" ? "Flous" : S.tab === "calques" ? "Calques" : "";
+  $("tagMode").textContent = S.tab === "flous" ? "Flous" : S.tab === "calques" ? "Calques" : S.tab === "montage" ? "Montage" : "";
 }
 /* grille magnétique : pas carré de W/n, les bords et les axes médians de l'image servent aussi de repères */
 function gridOn(p){ return !!(p.cfg.grille && p.cfg.grille.aimant); }
@@ -1012,10 +1215,15 @@ const G = {ptrs:new Map(), act:null};
 function ptPos(e){ const r = cv.getBoundingClientRect(); return {x:(e.clientX - r.left)*(cv.width/r.width)/V.k, y:(e.clientY - r.top)*(cv.height/r.height)/V.k}; }
 /* objet courant en coordonnées de l'espace de la vue : {kind, ref, cx, cy, hw, hh, rot} */
 function curObj(p){
-  if(S.tab === "cadre"){ if(!fmtOf(p.cfg).w) return null; const c = cropRect(p); return {kind:"cadre", ref:p.cfg.cadre, cx:c.x + c.w/2, cy:c.y + c.h/2, hw:c.w/2, hh:c.h/2, rot:0}; }
+  if(S.tab === "cadre"){ if(!fmtOf(p.cfg).w || isBandes(p)) return null; const c = cropRect(p); return {kind:"cadre", ref:p.cfg.cadre, cx:c.x + c.w/2, cy:c.y + c.h/2, hw:c.w/2, hh:c.h/2, rot:0}; }
   const o = outSize(p);
   if(S.tab === "flous"){ const z = (p.cfg.flous || []).find(x => x.id === S.fsel); if(!z) return null; const r = zoneOut(z, p, o.W, o.H); return {kind:"flou", ref:z, cx:r.x, cy:r.y, hw:r.w/2, hh:r.h/2, rot:(z.angle || 0)*Math.PI/180}; }
   if(S.tab === "calques"){ const l = p.cfg.calques.find(x => x.id === S.csel); if(!l || !l._box) return null; return {kind:"calque", ref:l, cx:l.x*o.W, cy:l.y*o.H, hw:l._box.w/2, hh:l._box.h/2, rot:(l.rot || 0)*Math.PI/180, wid:hasWid(l), norot:l.type === "coin"}; }
+  if(S.tab === "montage"){
+    const m = p.cfg.montage;
+    if(m.mode === "bandes" && m.bandes.length){ const i = clamp(S.msel, 0, m.bandes.length - 1), r = paneRects(m, m.bandes.length, o.W, o.H)[i]; return {kind:"bande", ref:m.bandes[i], cx:r.x + r.w/2, cy:r.y + r.h/2, hw:r.w/2, hh:r.h/2, rot:0, nohand:true, norot:true}; }
+    if(m.mode === "fusion" && m.fusion){ const f = m.fusion; if(S.msub === "fenetre" && f.fenetre.forme !== "non") return Object.assign(fenetreBox(p, f, o), {kind:"fenetre", ref:f, norot:true}); return Object.assign(fusionBox(p, f, o), {kind:"fusion", ref:f}); }
+  }
   return null;
 }
 function inBox(b, q, margin){
@@ -1039,6 +1247,10 @@ function pick(p, q){
   } else if(S.tab === "calques"){
     const ls = p.cfg.calques;
     for(let i = ls.length - 1; i >= 0; i--){ const l = ls[i]; if(l._box && inBox({cx:l.x*o.W, cy:l.y*o.H, hw:l._box.w/2, hh:l._box.h/2, rot:(l.rot || 0)*Math.PI/180}, q, hx(8))) return l.id; }
+  } else if(S.tab === "montage" && isBandes(p)){
+    // la bande sous le doigt (indice en chaîne) ; en superposition, l'objet courant est le seul manipulable
+    const m = p.cfg.montage, rects = paneRects(m, m.bandes.length, o.W, o.H);
+    for(let i = 0; i < rects.length; i++){ const r = rects[i]; if(q.x >= r.x && q.x <= r.x + r.w && q.y >= r.y && q.y <= r.y + r.h) return String(i); }
   }
   return null;
 }
@@ -1051,9 +1263,22 @@ function applyGesture(p, b, o0, dx, dy, f, da){
     c.w = o0.w*f; c.h = o0.h*f; c.x = o0.x + dx/sw - (c.w - o0.w)/2; c.y = o0.y + dy/sh - (c.h - o0.h)/2;
     fixCadre(p);
   } else if(b.kind === "flou"){
-    const z = b.ref, cd = p.cfg.cadre;
+    const z = b.ref, cd = cropRef(p);
     z.x = clamp(o0.x + dx/o.W*cd.w, 0, 1); z.y = clamp(o0.y + dy/o.H*cd.h, 0, 1);
     z.w = clamp(o0.w*f, 0.02, 1.5); z.h = clamp(o0.h*f, 0.02, 1.5); z.angle = Math.round(o0.angle + da*180/Math.PI);
+  } else if(b.kind === "bande"){
+    // la photo suit le doigt dans sa bande (le cadre va dans l'autre sens) ; pincer zoome autour du centre du cadre
+    const q = photoOf(p, b.ref.src), c0 = o0.cadre; if(!q || !c0) return;
+    const pw = b.hw*2, ph = b.hh*2, c = {w:c0.w/f, h:c0.h/f};
+    c.x = c0.x + (c0.w - c.w)/2 - dx/pw*c.w; c.y = c0.y + (c0.h - c.h)/2 - dy/ph*c.h;
+    b.ref.cadre = fitCadre(c, srcW(q), srcH(q), pw/ph);
+  } else if(b.kind === "fusion"){
+    const l = b.ref;
+    l.x = clamp(o0.x + dx/o.W, -0.5, 1.5); l.y = clamp(o0.y + dy/o.H, -0.5, 1.5); l.s = clamp(o0.s*f, 0.1, 8); l.rot = clamp(Math.round((o0.rot + da*180/Math.PI)*10)/10, -180, 180);
+  } else if(b.kind === "fenetre"){
+    // la fenêtre se déplace dans le repère (tourné) de la photo superposée
+    const w = b.ref.fenetre, w0 = o0.fenetre, c = Math.cos(b.rot), s = Math.sin(b.rot), lx = dx*c + dy*s, ly = -dx*s + dy*c;
+    w.x = clamp(w0.x + lx/b.ow, 0, 1); w.y = clamp(w0.y + ly/b.oh, 0, 1); w.w = clamp(w0.w*f, 0.05, 1.5); w.h = clamp(w0.h*f, 0.05, 1.5);
   } else {
     const l = b.ref;
     l.x = clamp(o0.x + dx/o.W, -0.2, 1.2); l.y = clamp(o0.y + dy/o.H, -0.2, 1.2); l.s = clamp(o0.s*f, 0.2, 5); l.rot = Math.round(o0.rot + da*180/Math.PI);
@@ -1080,14 +1305,14 @@ cv.addEventListener("pointerdown", e => {
   }
   if(G.ptrs.size > 1) return;
   let b = curObj(p);
-  const h = b && handleAt(b, q, b.kind !== "cadre" && !b.norot);
+  const h = b && !b.nohand && handleAt(b, q, b.kind !== "cadre" && !b.norot);
   if(h){ G.act = {kind:h.h, b:b, o0:snapshot(b), start:q, d0:Math.max(1, Math.hypot(q.x - b.cx, q.y - b.cy)), a0:Math.atan2(q.y - b.cy, q.x - b.cx)}; return; }
   let picked = false;
   if(S.tab !== "cadre"){
     // l'objet déjà choisi garde la main s'il est sous le doigt ; sinon on prend celui qui s'y trouve
     if(!(b && inBox(b, q, hx(8)))){
       const id = pick(p, q);
-      if(id){ if(S.tab === "flous") S.fsel = id; else S.csel = id; picked = true; renderPanel(); draw(); b = curObj(p); }
+      if(id){ if(S.tab === "flous") S.fsel = id; else if(S.tab === "montage") S.msel = +id; else S.csel = id; picked = true; renderPanel(); draw(); b = curObj(p); }
       else { if(S.tab === "calques" && S.csel){ S.csel = null; renderPanel(); draw(); } return; }
     }
   } else if(b && !inBox(b, q, hx(20))){ return; }
@@ -1173,7 +1398,7 @@ $("film").addEventListener("click", e => {
   if(b.dataset.sel) select(b.dataset.sel);
 });
 function select(id){
-  S.sel = id; S.fsel = null; S.csel = null;
+  S.sel = id; S.fsel = null; S.csel = null; S.msel = 0; S.msub = "calque";
   const p = selected(); if(!p) return;
   $("pname").textContent = `${p.path}  ·  ${p.w} x ${p.h}`;
   renderFilm(); renderPanel(); draw();
@@ -1191,7 +1416,14 @@ $("tabs").addEventListener("click", e => {
    et lisent des attributs data-*. */
 function chips(list, cur, attr, cls){ return `<div class="chips">${list.map(x => `<button type="button" class="chip ${cls || ''}" data-${attr}="${esc(x[0])}" aria-pressed="${x[0] === cur}">${esc(x[1])}${x[2] ? `<small>${esc(x[2])}</small>` : ''}</button>`).join("")}</div>`; }
 function swatches(cur, attr){ return `<div class="chips">${COULEURS.map(c => `<button type="button" class="sw" style="background:${c[0]}" data-${attr}="${c[0]}" aria-pressed="${c[0] === cur}" title="${c[1]}" aria-label="${c[1]}"></button>`).join("")}</div>`; }
-function range(lbl, attr, val, min, max, unit){ return `<div class="grp"><span class="lbl">${lbl}<span class="val">${val}${unit || ""}</span></span><input type="range" data-${attr} min="${min}" max="${max}" value="${val}"></div>`; }
+function range(lbl, attr, val, min, max, unit, step){ return `<div class="grp"><span class="lbl">${lbl}<span class="val">${val}${unit || ""}</span></span><input type="range" data-${attr} data-unit="${unit || ""}" min="${min}" max="${max}" step="${step || 1}" value="${val}"></div>`; }
+function photoChips(p, cur, attr, exclSelf){
+  const list = S.photos.filter(x => !exclSelf || x !== p);
+  if(!list.length) return `<p class="hint">Chargez la photo à superposer (infrarouge) avec le bouton « + » de la pellicule.</p>`;
+  return `<div class="chips">${list.map(x => `<button type="button" class="chip pic" data-${attr}="${x.id}" aria-pressed="${x === cur}"><img src="${x.thumb}" alt=""><span>${esc(x.name)}</span></button>`).join("")}</div>`;
+}
+function curPane(p){ const m = p.cfg.montage; return m && m.mode === "bandes" && m.bandes.length ? m.bandes[clamp(S.msel, 0, m.bandes.length - 1)] : null; }
+function setMontageMode(p, mode){ p.cfg.montage.mode = mode; S.msel = 0; S.msub = "calque"; fixMontage(p); }
 function renderPanel(){
   const p = selected(), box = $("panel"); if(!p){ box.innerHTML = ""; return; }
   const c = p.cfg;
@@ -1200,11 +1432,43 @@ function renderPanel(){
     const f = fmtOf(c), m = maxCadre(p), zoom = f.w ? Math.round(c.cadre.w/m.w*100) : 100;
     h += `<div class="grp"><span class="lbl">Format de publication</span>${chips(FORMATS.map(x => [x.id, x.nom, x.w ? `${x.res} · ${x.w} x ${x.h}` : x.res]), c.format, "fmt")}</div>`;
     h += `<div class="grp"><span class="lbl">Orientation de la photo</span><div class="actions"><button type="button" class="btn small ghost" data-act="rotL">Tourner à gauche</button><button type="button" class="btn small ghost" data-act="rotR">Tourner à droite</button></div></div>`;
-    if(f.w){
+    if(isBandes(p)) h += `<p class="hint">En bandeaux, le cadrage de chaque bande se règle dans l'onglet Montage : glissez la photo dans sa bande, pincez pour zoomer.</p>`;
+    else if(f.w){
       h += range("Zoom du cadre", "zoom", zoom, 10, 100, " %");
       h += `<div class="actions"><button type="button" class="btn small ghost" data-act="center">Centrer le cadre</button><button type="button" class="btn small ghost" data-act="maxc">Cadre maximal</button></div>`;
       h += `<p class="hint">Sur l'image : glissez le cadre, pincez ou tirez un coin pour le redimensionner. Le cadre garde les proportions du format choisi.</p>`;
     } else h += `<p class="hint">Format original : la photo est exportée entière (côté long limité à 2048 px).</p>`;
+  } else if(S.tab === "montage"){
+    fixMontage(p);
+    const m = c.montage;
+    h += `<div class="grp"><span class="lbl">Composition</span>${chips(MODES_MONTAGE, m.mode, "mmode")}<p class="hint">${m.mode === "bandes" ? "Plusieurs photos sur une même image (vue large, zoom, infrarouge), en bandes côte à côte ou empilées." : m.mode === "fusion" ? "Une photo (l'infrarouge) posée en transparence sur celle-ci et alignée dessus : une sorte de réalité augmentée." : "Combinez cette photo avec d'autres photos chargées : bandeaux côte à côte ou superposition infrarouge."}</p></div>`;
+    if(m.mode === "bandes"){
+      const i = clamp(S.msel, 0, m.bandes.length - 1), b = m.bandes[i], q = photoOf(p, b.src), o = outSize(p), rect = paneRects(m, m.bandes.length, o.W, o.H)[i];
+      h += `<div class="grp"><span class="lbl">Disposition</span>${chips([["v","Côte à côte"],["h","Empilées"]], m.sens, "msens")}</div>`;
+      h += `<div class="grp"><span class="lbl">Bandes</span><div class="chips">${m.bandes.map((x, j) => `<button type="button" class="chip" data-msel="${j}" aria-pressed="${j === i}">Bande ${j + 1}</button>`).join("")}${m.bandes.length < 4 ? `<button type="button" class="chip add" data-act="madd">+ Ajouter une bande</button>` : ""}</div></div>`;
+      h += `<div class="sub"><div class="lbl">Bande ${i + 1}</div><div class="grp"><span class="lbl">Photo</span>${photoChips(p, q, "mpick")}</div>`;
+      h += `<div class="grp"><span class="lbl">Étiquette</span><input class="field" data-metq="1" value="${esc(b.etiquette)}" maxlength="40" placeholder="Ex. : Vue large, Zoom, Infrarouge"></div>`;
+      if(q && b.cadre){ const mx = maxCadreFor(srcW(q), srcH(q), rect.ratio); h += range("Zoom", "mzoom", Math.round(b.cadre.w/mx.w*100), 10, 100, " %"); }
+      h += `<div class="actions"><button type="button" class="btn small ghost" data-act="mcenter">Centrer</button><button type="button" class="btn small ghost" data-act="mmax">Cadre maximal</button>${m.bandes.length > 2 ? `<button type="button" class="btn small ghost danger" data-act="mdel">Retirer cette bande</button>` : ""}</div>`;
+      h += `<p class="hint">Sur l'image : touchez une bande pour la choisir, glissez la photo dans sa bande pour la cadrer, pincez ou molette pour zoomer. Les couleurs de chaque bande sont celles réglées sur sa photo.</p></div>`;
+      h += range("Séparateur", "msep", m.sep, 0, 40) + `<div class="grp"><span class="lbl">Couleur du séparateur</span>${swatches(m.sepCouleur, "msepc")}</div>`;
+    } else if(m.mode === "fusion" && m.fusion){
+      const f = m.fusion, q = photoOf(p, f.src), w = f.fenetre;
+      h += `<div class="grp"><span class="lbl">Photo superposée</span>${photoChips(p, q, "mfsrc", true)}</div>`;
+      h += `<div class="grp"><span class="lbl">Mode</span>${chips(FUSIONS, f.mode, "mblend")}<p class="hint">Fondu : transparence simple. Éclaircir : seules les parties plus claires que la photo ressortent (points chauds en blanc). Lumière : ajoute la lumière de l'infrarouge. Chaleur : seules les zones plus claires que le seuil restent visibles.</p></div>`;
+      if(f.mode === "chaleur") h += range("Seuil de chaleur", "mseuil", f.seuil, 0, 100, " %");
+      h += range("Opacité", "mop", f.op, 0, 100, " %") + range("Taille", "ms", Math.round(f.s*100), 10, 800, " %") + range("Rotation", "mrot", f.rot, -180, 180, "°", 0.5);
+      h += `<div class="actions"><button type="button" class="btn small ghost" data-act="mfcenter">Centrer</button><button type="button" class="btn small ghost" data-act="mfit">Même largeur que l'image</button></div>`;
+      h += `<div class="sub"><div class="lbl">Fenêtre</div>${chips([["non","Toute la photo"],["rect","Rectangle"],["ellipse","Ovale"]], w.forme, "mforme")}`;
+      if(w.forme !== "non"){
+        h += `<div class="grp"><span class="lbl">Régler sur l'image</span>${chips([["calque","L'alignement de la photo"],["fenetre","La fenêtre"]], S.msub, "msub")}</div>`;
+        h += range("Largeur de la fenêtre", "mfw", Math.round(w.w*100), 5, 150, " %") + range("Hauteur de la fenêtre", "mfh", Math.round(w.h*100), 5, 150, " %");
+        h += `<div class="grp"><span class="lbl">Bords</span>${chips([["1","Fondus"],["0","Nets"]], w.fondu ? "1" : "0", "mfondu")}</div>`;
+        h += `<div class="grp"><span class="lbl">Contour</span><div class="chips"><button type="button" class="chip" data-mcont="aucun" aria-pressed="${!w.contour}">Aucun</button>${COULEURS.map(x => `<button type="button" class="sw" style="background:${x[0]}" data-mcont="${x[0]}" aria-pressed="${x[0] === w.contour}" title="${x[1]}" aria-label="${x[1]}"></button>`).join("")}</div></div>`;
+      }
+      h += `<p class="hint">La fenêtre suit la photo superposée : elle ne garde que la zone utile (l'animal, le point chaud).</p></div>`;
+      h += `<p class="hint">Sur l'image : glissez la photo superposée, pincez ou tirez la poignée jaune pour sa taille, la bleue pour l'orienter, jusqu'à retrouver le même cadrage que la photo du dessous (baissez l'opacité pour voir les deux). Molette : taille.</p>`;
+    } else if(S.photos.length < 2) h += `<p class="hint">Chargez aussi les autres vues du même moment (zoom, infrarouge) avec le bouton « + » de la pellicule, puis choisissez une composition.</p>`;
   } else if(S.tab === "couleur"){
     const u = c.couleur;
     h += `<div class="grp"><span class="lbl">Filtre</span>${chips(FILTRES.map(x => [x.id, x.nom]), c.filtre, "filtre")}</div>`;
@@ -1237,6 +1501,7 @@ function renderPanel(){
   } else if(S.tab === "export"){
     const o = outSize(p), f = fmtOf(c), name = outName(p);
     h += `<div class="card"><div class="kv">Photo : <b>${esc(p.path)}</b></div><div class="kv">Format : <b>${esc(f.nom)}</b> (${esc(f.res)}), <b>${o.W} x ${o.H}</b> px, JPEG</div><div class="kv">Fichier exporté : <b>${esc(name)}</b></div>`;
+    if(isMontage(p)){ const m = c.montage, fq = m.fusion ? photoOf(p, m.fusion.src) : null; h += `<div class="kv">Montage : <b>${m.mode === "bandes" ? `${m.bandes.length} bandeaux ${m.sens === "h" ? "empilés" : "côte à côte"}` : `superposition de ${esc(fq ? fq.name : (m.fusion && m.fusion.src) || "photo manquante")}`}</b></div>`; }
     if(S.dirWritable) h += `<div class="kv">Dossier de travail : les exports vont dans <b>publication/</b>, la fiche est enregistrée à côté de la photo ${p.ficheOk ? "(à jour)" : ""}.</div>`;
     h += `</div>`;
     const m = c.meta || readMeta(null);
@@ -1308,7 +1573,7 @@ function focusEditor(){
   try { f.focus({preventScroll:true}); } catch(e){ f.focus(); }
   if(f.setSelectionRange){ const n = f.value.length; f.setSelectionRange(n, n); }
 }
-function outName(p){ return `${slug(baseName(p.name)) || "photo"}_${fmtOf(p.cfg).id}.jpg`; }
+function outName(p){ return `${slug(baseName(p.name)) || "photo"}_${fmtOf(p.cfg).id}${isMontage(p) ? "_montage" : ""}.jpg`; }
 function ficheJson(p){ return JSON.stringify(p.cfg, noPriv, 1); }
 function rememberSecteur(s){
   s = clean(s).trim(); if(!s) return;
@@ -1317,7 +1582,7 @@ function rememberSecteur(s){
 }
 try { S.secteurs = JSON.parse(localStorage.getItem("esam-picture:secteurs") || "[]"); } catch(e){}
 function addZone(p){
-  const c = p.cfg.cadre, z = {id:uid(), forme:"ellipse", mode:"doux", force:2, x:c.x + c.w/2, y:c.y + c.h/2, w:c.w*0.22, h:c.h*0.22, angle:0};
+  const c = cropRef(p), z = {id:uid(), forme:"ellipse", mode:"doux", force:2, x:c.x + c.w/2, y:c.y + c.h/2, w:c.w*0.22, h:c.h*0.22, angle:0};
   p.cfg.flous = (p.cfg.flous || []).concat([z]); S.fsel = z.id;
   toast("Zone ajoutée au centre : glissez-la sur ce qu'il faut cacher.");
 }
@@ -1343,13 +1608,34 @@ $("panel").addEventListener("click", e => {
     return;
   }
   else if(d.grille){ const n = +d.grille; c.grille = {aimant:n > 0, n:n > 0 ? n : (c.grille && c.grille.n) || 12}; try { localStorage.setItem("esam-picture:grille", JSON.stringify(c.grille)); } catch(err){} }
+  else if(d.mmode){ setMontageMode(p, d.mmode); }
+  else if(d.msens){ c.montage.sens = d.msens; }
+  else if(d.msel !== undefined){ S.msel = +d.msel; }
+  else if(d.mpick){
+    const b = curPane(p), q = S.photos.find(x => x.id === d.mpick);
+    if(b && q){ const auto = Object.keys(KIND_LABEL).some(k => KIND_LABEL[k] === b.etiquette); b.src = srcOf(p, q); b.cadre = null; if(!b.etiquette || auto) b.etiquette = KIND_LABEL[kindOf(q.name)] || ""; }
+  }
+  else if(d.mfsrc){ const q = S.photos.find(x => x.id === d.mfsrc); if(c.montage.fusion && q) c.montage.fusion.src = srcOf(p, q); }
+  else if(d.mblend || d.mforme || d.msub || d.mfondu || d.mcont){
+    const f = c.montage.fusion; if(!f) return;
+    if(d.mblend) f.mode = d.mblend;
+    if(d.mforme){ f.fenetre.forme = d.mforme; S.msub = d.mforme === "non" ? "calque" : "fenetre"; }
+    if(d.msub) S.msub = d.msub;
+    if(d.mfondu) f.fenetre.fondu = d.mfondu === "1";
+    if(d.mcont) f.fenetre.contour = d.mcont === "aucun" ? "" : d.mcont;
+  }
+  else if(d.msepc){ c.montage.sepCouleur = d.msepc; }
   else if(d.csel){ S.csel = d.csel; }
   else if(d.lup || d.ldown){ const id = d.lup || d.ldown, i = c.calques.findIndex(x => x.id === id), j = d.lup ? i - 1 : i + 1; if(i >= 0 && j >= 0 && j < c.calques.length){ const t = c.calques[i]; c.calques[i] = c.calques[j]; c.calques[j] = t; } }
   else if(d.ldel){ S.csel = d.ldel; delLayer(p); return; }
   else if(d.lmode || d.lcol || d.lfond || d.lepais || d.lcoin || d.lstyle){ const l = c.calques.find(x => x.id === S.csel); if(l){ if(d.lmode) l.mode = d.lmode; if(d.lcol) l.couleur = d.lcol; if(d.lfond) l.fond = d.lfond; if(d.lepais) l.epais = +d.lepais; if(d.lcoin) l.coin = d.lcoin; if(d.lstyle) l.style = d.lstyle; } }
   else if(d.act){
     const a = d.act, l = c.calques.find(x => x.id === S.csel);
-    if(a === "rotL" || a === "rotR"){ c.rotation = ((c.rotation || 0) + (a === "rotR" ? 90 : 270)) % 360; c.cadre = null; fixCadre(p); c.flous.forEach(z => { const x = z.x, y = z.y; if(a === "rotR"){ z.x = 1 - y; z.y = x; } else { z.x = y; z.y = 1 - x; } const w = z.w; z.w = z.h; z.h = w; }); }
+    if(a === "rotL" || a === "rotR"){
+      c.rotation = ((c.rotation || 0) + (a === "rotR" ? 90 : 270)) % 360; c.cadre = null; fixCadre(p);
+      if(isBandes(p)) c.montage.bandes.forEach(b => { if(photoOf(p, b.src) === p) b.cadre = null; });   // les bandes de cette photo repartent du cadre maximal
+      else c.flous.forEach(z => { const x = z.x, y = z.y; if(a === "rotR"){ z.x = 1 - y; z.y = x; } else { z.x = y; z.y = 1 - x; } const w = z.w; z.w = z.h; z.h = w; });
+    }
     else if(a === "center"){ const m = maxCadre(p); c.cadre.x = m.x + (m.w - c.cadre.w)/2; c.cadre.y = m.y + (m.h - c.cadre.h)/2; fixCadre(p); }
     else if(a === "maxc"){ c.cadre = null; fixCadre(p); }
     else if(a === "colReset"){ c.couleur = newCfg().couleur; c.filtre = "aucun"; }
@@ -1362,6 +1648,11 @@ $("panel").addEventListener("click", e => {
     else if(a === "lreset" && l){ l.s = 1; l.rot = 0; if(l.type === "texte") l.larg = 0.8; else if(l.ar) l.ar = l.type === "cercle" ? 1.3 : 1; }
     else if(a === "lmiroir" && l){ l.miroir = !l.miroir; }
     else if(a === "ldone"){ S.csel = null; }
+    else if(a === "madd"){ const m = c.montage, last = m.bandes[m.bandes.length - 1]; if(m.bandes.length < 4){ m.bandes.push({src:last ? last.src : null, cadre:null, etiquette:""}); S.msel = m.bandes.length - 1; } }
+    else if(a === "mdel"){ const m = c.montage; if(m.bandes.length > 2){ m.bandes.splice(clamp(S.msel, 0, m.bandes.length - 1), 1); S.msel = clamp(S.msel, 0, m.bandes.length - 1); } }
+    else if(a === "mcenter" || a === "mmax"){ const b = curPane(p); if(b){ if(a === "mmax" || !b.cadre) b.cadre = null; else { const q = photoOf(p, b.src); if(q){ const o = outSize(p), mx = maxCadreFor(srcW(q), srcH(q), paneRects(c.montage, c.montage.bandes.length, o.W, o.H)[clamp(S.msel, 0, c.montage.bandes.length - 1)].ratio); b.cadre.x = mx.x + (mx.w - b.cadre.w)/2; b.cadre.y = mx.y + (mx.h - b.cadre.h)/2; } } } }
+    else if(a === "mfcenter" && c.montage.fusion){ c.montage.fusion.x = 0.5; c.montage.fusion.y = 0.5; }
+    else if(a === "mfit" && c.montage.fusion){ c.montage.fusion.s = 1; c.montage.fusion.rot = 0; }
     else if(a === "export"){ exportPhoto(p); redraw = false; }
     else if(a === "share"){ sharePhoto(p); redraw = false; }
     else if(a === "fiche"){ download(new Blob([ficheJson(p)], {type:"application/json"}), `${p.name}.esam.json`); redraw = false; }
@@ -1388,6 +1679,22 @@ $("panel").addEventListener("input", e => {
     return;
   }
   else if(d.fw !== undefined || d.fh !== undefined || d.fa !== undefined){ const z = c.flous.find(x => x.id === S.fsel); if(!z) return; if(d.fw !== undefined) z.w = v/100; if(d.fh !== undefined) z.h = v/100; if(d.fa !== undefined) z.angle = v; }
+  else if(d.msep !== undefined){ c.montage.sep = v; }
+  else if(d.metq !== undefined || d.mzoom !== undefined){
+    const b = curPane(p); if(!b) return;
+    if(d.metq !== undefined) b.etiquette = clean(t.value).slice(0, 40);
+    else {
+      const q = photoOf(p, b.src); if(!q || !b.cadre) return;
+      const o = outSize(p), ratio = paneRects(c.montage, c.montage.bandes.length, o.W, o.H)[clamp(S.msel, 0, c.montage.bandes.length - 1)].ratio, mx = maxCadreFor(srcW(q), srcH(q), ratio);
+      const k = b.cadre, cxp = k.x + k.w/2, cyp = k.y + k.h/2; k.w = mx.w*v/100; k.h = k.w*srcW(q)/srcH(q)/ratio; k.x = cxp - k.w/2; k.y = cyp - k.h/2;
+      b.cadre = fitCadre(k, srcW(q), srcH(q), ratio);
+    }
+  }
+  else if(d.mop !== undefined || d.ms !== undefined || d.mrot !== undefined || d.mseuil !== undefined || d.mfw !== undefined || d.mfh !== undefined){
+    const f = c.montage.fusion; if(!f) return;
+    if(d.mop !== undefined) f.op = v; else if(d.ms !== undefined) f.s = v/100; else if(d.mrot !== undefined) f.rot = v; else if(d.mseuil !== undefined) f.seuil = v;
+    else if(d.mfw !== undefined) f.fenetre.w = v/100; else f.fenetre.h = v/100;
+  }
   else {
     const l = c.calques.find(x => x.id === S.csel); if(!l) return;
     if(d.ltext !== undefined) l.texte = t.value;
@@ -1399,7 +1706,7 @@ $("panel").addEventListener("input", e => {
     else if(d.lop !== undefined) l.op = v;
     else return;
   }
-  if(lbl) lbl.textContent = `${t.value}${d.zoom !== undefined || d.fw !== undefined || d.fh !== undefined || d.ls !== undefined || d.lar !== undefined || d.llarg !== undefined || d.lop !== undefined ? " %" : d.fa !== undefined || d.lrot !== undefined ? "°" : ""}`;
+  if(lbl) lbl.textContent = `${t.value}${d.unit || ""}`;
   draw();
   clearTimeout(S.inputT); S.inputT = setTimeout(() => { persist(p); if(d.ltext !== undefined || d.lfield) refreshLayerList(p); }, 400);
 });

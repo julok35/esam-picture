@@ -157,6 +157,56 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   await page.click('[data-act="ldone"]');
   await page.screenshot({ path: path.join(caps, `${label}_calques.png`) });
 
+  // Montage : bandeaux (deux bandes, cadrage de la deuxième à la souris), puis superposition avec fenêtre
+  await page.click('[data-tab="montage"]');
+  await page.click('[data-mmode="bandes"]');
+  await page.waitForTimeout(300);
+  cf = await cfgOf();
+  check(cf.montage.mode === "bandes" && cf.montage.bandes.length === 2 && cf.montage.bandes[0].src === null && cf.montage.bandes[1].src === "IMG_portrait.jpg", "bandeaux : deux bandes, la photo puis la suivante");
+  const x1 = cf.montage.bandes[1].cadre.x;
+  const b4 = await page.locator("#cv").boundingBox();
+  await page.mouse.move(b4.x + b4.width * 0.75, b4.y + b4.height / 2); await page.mouse.down();
+  await page.mouse.move(b4.x + b4.width * 0.75 + 40, b4.y + b4.height / 2, { steps: 5 }); await page.mouse.up();
+  await page.waitForTimeout(300);
+  cf = await cfgOf();
+  check((await page.getAttribute('[data-msel="1"]', "aria-pressed")) === "true" && cf.montage.bandes[1].cadre.x < x1, `bande 2 choisie au doigt et recadrée (x ${x1.toFixed(3)} -> ${cf.montage.bandes[1].cadre.x.toFixed(3)})`);
+  await page.fill('input[data-metq]', "Zoom");
+  await page.click('[data-msens="h"]');
+  await page.waitForTimeout(500);
+  cf = await cfgOf();
+  check(cf.montage.sens === "h" && cf.montage.bandes[1].etiquette === "Zoom", "bandes empilées, étiquette saisie");
+  await page.screenshot({ path: path.join(caps, `${label}_montage_bandes.png`) });
+  await page.click('[data-mmode="fusion"]');
+  await page.waitForTimeout(300);
+  cf = await cfgOf();
+  check(cf.montage.mode === "fusion" && cf.montage.fusion && cf.montage.fusion.src === "IMG_portrait.jpg", "superposition : la deuxième photo est posée sur la première");
+  await page.$eval('input[data-mop]', el => { el.value = 60; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  const b5 = await page.locator("#cv").boundingBox();
+  await page.mouse.move(b5.x + b5.width / 2, b5.y + b5.height / 2); await page.mouse.down();
+  await page.mouse.move(b5.x + b5.width / 2 + 30, b5.y + b5.height / 2 + 20, { steps: 5 }); await page.mouse.up();
+  await page.waitForTimeout(300);
+  cf = await cfgOf();
+  check(cf.montage.fusion.op === 60 && cf.montage.fusion.x > 0.5 && cf.montage.fusion.y > 0.5, `photo superposée déplacée à la souris (x=${cf.montage.fusion.x.toFixed(3)})`);
+  await page.click('[data-mforme="ellipse"]');
+  await page.click('[data-mblend="eclaircir"]');
+  await page.waitForTimeout(300);
+  const b6 = await page.locator("#cv").boundingBox();
+  await page.mouse.move(b6.x + b6.width / 2 + 30, b6.y + b6.height / 2 + 20); await page.mouse.down();
+  await page.mouse.move(b6.x + b6.width / 2 + 5, b6.y + b6.height / 2 + 20, { steps: 5 }); await page.mouse.up();
+  await page.waitForTimeout(300);
+  cf = await cfgOf();
+  check(cf.montage.fusion.fenetre.forme === "ellipse" && cf.montage.fusion.fenetre.x < 0.5 && cf.montage.fusion.mode === "eclaircir", `fenêtre ovale déplacée (x=${cf.montage.fusion.fenetre.x.toFixed(3)})`);
+  await page.screenshot({ path: path.join(caps, `${label}_montage_fusion.png`) });
+  await page.click('[data-tab="export"]');
+  check((await page.textContent("#panel")).includes("superposition de IMG_portrait.jpg"), "montage annoncé dans l'onglet Export");
+  const [dlm] = await Promise.all([page.waitForEvent("download"), page.click('[data-act="export"]')]);
+  const outm = path.join(caps, `${label}_${dlm.suggestedFilename()}`); await dlm.saveAs(outm);
+  const dimsm = await page.evaluate(async b64 => new Promise(r => { const i = new Image(); i.onload = () => r([i.naturalWidth, i.naturalHeight]); i.src = "data:image/jpeg;base64," + b64; }), fs.readFileSync(outm).toString("base64"));
+  check(dlm.suggestedFilename() === "DJI_0001_portrait_montage.jpg" && dimsm[0] === 1080 && dimsm[1] === 1350, `montage exporté ${dlm.suggestedFilename()} (${dimsm.join("x")})`);
+  await page.click('[data-tab="montage"]');
+  await page.click('[data-mmode="aucun"]');
+  await page.waitForTimeout(300);
+
   // Export photo et fiche
   await page.click('[data-tab="export"]');
   await page.fill('[data-meta="description"]', "Chien secouru par l'ESAM");
@@ -178,6 +228,7 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   const fichePath = path.join(caps, `${label}_fiche.json`); await dl2.saveAs(fichePath);
   const fiche = JSON.parse(fs.readFileSync(fichePath, "utf8"));
   check(fiche.format === "portrait" && fiche.flous.length === 3 && fiche.calques.length === 11 && fiche.filtre === "esam", "fiche JSON complète");
+  check(fiche.montage.mode === "aucun" && fiche.montage.bandes.length === 2 && fiche.montage.fusion.src === "IMG_portrait.jpg", "fiche : montage conservé (bandes et superposition)");
 
   // Reprise : nouvelle page sans localStorage, chargement de la photo puis de la fiche
   const page2 = await ctxB.newPage();
