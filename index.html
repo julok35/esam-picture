@@ -249,7 +249,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 /* Photos ESAM : préparation d'images pour les réseaux sociaux. Un seul fichier, pas de build, ES2017.
    Sections : utils, modèle, formats, chargement, dossier de travail, rendu (base, couleur, flous, calques),
    aperçu et interactions, panneaux, export, démarrage. Voir docs/ARCHITECTURE.md. */
-const APP_VERSION = "0.5";
+const APP_VERSION = "0.6";
 const $ = id => document.getElementById(id);
 
 /* ---------- utils ---------- */
@@ -304,7 +304,7 @@ function wrapLines(ctx, txt, maxW){
        zone {x, y, w} centre et largeur en fraction de la source grossie, forme cercle|rect, ar, couleur, epais, lien, etiquette,
      montage {mode, sens, sep, sepCouleur, bandes, fusion} : composition avec d'autres photos chargées (voir « rendu : montage »). */
 const pendingFiches = {};   // fiches importées avant leurs photos, par nom de fichier
-const S = {photos:[], sel:null, tab:"cadre", mode:"calques", dirHandle:null, dirWritable:false, fsel:null, csel:null, lsub:"calque", msel:0, msub:"calque", mview:"deux", secteurs:[]};
+const S = {photos:[], sel:null, tab:"cadre", mode:"calques", dirHandle:null, dirWritable:false, fsel:null, csel:null, lsub:"calque", csrc:null, msel:0, msub:"calque", mview:"deux", secteurs:[]};
 const FORMATS = [
   {id:"carre", nom:"Carré 1:1", res:"Instagram, Facebook, LinkedIn", w:1080, h:1080},
   {id:"portrait", nom:"Portrait 4:5", res:"Instagram, Facebook", w:1080, h:1350},
@@ -1525,15 +1525,23 @@ function delZone(p){ p.cfg.flous = (p.cfg.flous || []).filter(z => z.id !== S.fs
 function delLayer(p){ p.cfg.calques = p.cfg.calques.filter(l => l.id !== S.csel); S.csel = null; persist(p); renderPanel(); draw(); }
 
 /* ---------- pellicule et sélection ---------- */
-/* rôle de chaque photo dans la composition de la photo choisie (dessous, dessus, bande n, loupe) */
+/* photos qui composent l'image de p, avec leur rôle (dessous, dessus, bande n, loupe) ; p en tête (rôle "" si seule) */
+function composition(p){
+  const out = [{q:p, role:""}], m = p.cfg.montage || {};
+  const add = (q, role) => { if(!q) return; const e = out.find(x => x.q === q); if(!e) out.push({q:q, role:role}); else if(!e.role) e.role = role; else e.role = /^Bande/.test(e.role) && /^Bande/.test(role) ? `${e.role}+${role.slice(6)}` : `${e.role}, ${role.toLowerCase()}`; };
+  if(m.mode === "fusion" && m.fusion){ out[0].role = "Dessous"; add(photoOf(p, m.fusion.src), "Dessus"); }
+  else if(m.mode === "bandes") m.bandes.forEach((b, i) => add(photoOf(p, b.src), `Bande ${i + 1}`));
+  p.cfg.calques.forEach(l => { if(l.type === "zoom" && l.src){ const q = photoOf(p, l.src); if(q && q !== p) add(q, "Loupe"); } });
+  return out;
+}
+/* rôle de chaque photo dans la composition de la photo choisie, pour la pellicule */
 function filmRoles(){
   const p = selected(), roles = {}; if(!p) return roles;
-  const m = p.cfg.montage || {};
-  if(m.mode === "fusion" && m.fusion){ roles[p.id] = "Dessous"; const q = photoOf(p, m.fusion.src); if(q && q !== p) roles[q.id] = "Dessus"; }
-  else if(m.mode === "bandes") m.bandes.forEach((b, i) => { const q = photoOf(p, b.src); if(q) roles[q.id] = roles[q.id] ? `${roles[q.id]}+${i + 1}` : `Bande ${i + 1}`; });
-  p.cfg.calques.forEach(l => { if(l.type === "zoom" && l.src){ const q = photoOf(p, l.src); if(q && q !== p && !roles[q.id]) roles[q.id] = "Loupe"; } });
+  composition(p).forEach(x => { if(x.role) roles[x.q.id] = x.role; });
   return roles;
 }
+/* photo dont l'onglet Couleur règle les couleurs : une des photos de la composition (S.csrc), sinon la photo elle-même */
+function colorTarget(p){ return (S.csrc && composition(p).find(x => x.q.id === S.csrc) || {q:p}).q; }
 function renderFilm(){
   const f = $("film"), roles = filmRoles();
   f.innerHTML = S.photos.map(p => `<button type="button" class="th" data-sel="${p.id}" aria-pressed="${p.id === S.sel}" title="${esc(p.name)}${roles[p.id] ? ` (${esc(roles[p.id])})` : ""}"><img src="${p.thumb}" alt="">${p.modified ? '<span class="dot" title="Modifiée"></span>' : ''}${p.exported ? '<span class="ok" title="Exportée"></span>' : ''}${roles[p.id] ? `<span class="role">${esc(roles[p.id])}</span>` : ''}</button>`).join("")
@@ -1547,18 +1555,18 @@ $("film").addEventListener("click", e => {
   if(b.dataset.sel) select(b.dataset.sel);
 });
 function select(id){
-  S.sel = id; S.fsel = null; S.csel = null; S.lsub = "calque"; S.msel = 0; S.msub = "calque"; S.mview = "deux";
+  S.sel = id; S.fsel = null; S.csel = null; S.lsub = "calque"; S.csrc = null; S.msel = 0; S.msub = "calque"; S.mview = "deux";
   const p = selected(); if(!p) return;
   $("pname").textContent = `${p.path}  ·  ${p.w} x ${p.h}`;
   renderFilm(); renderPanel(); draw();
   const th = $("film").querySelector(`[data-sel="${id}"]`); if(th && th.scrollIntoView) th.scrollIntoView({block:"nearest", inline:"nearest"});
 }
-$("tabs").addEventListener("click", e => {
-  const b = e.target.closest(".tab"); if(!b) return;
-  S.tab = b.dataset.tab;
-  Array.prototype.forEach.call($("tabs").children, t => t.setAttribute("aria-selected", t === b));
+function goTab(name){
+  S.tab = name;
+  Array.prototype.forEach.call($("tabs").children, t => t.setAttribute("aria-selected", t.dataset.tab === name));
   renderPanel(); draw();
-});
+}
+$("tabs").addEventListener("click", e => { const b = e.target.closest(".tab"); if(b) goTab(b.dataset.tab); });
 
 /* ---------- panneaux ----------
    renderPanel() reconstruit le panneau de l'onglet courant ; les gestionnaires sont posés une fois sur #panel
@@ -1599,7 +1607,7 @@ function renderPanel(){
       h += `<div class="sub"><div class="lbl">Bande ${i + 1}</div><div class="grp"><span class="lbl">Photo</span>${photoChips(p, q, "mpick")}</div>`;
       h += `<div class="grp"><span class="lbl">Étiquette</span><input class="field" data-metq="1" value="${esc(b.etiquette)}" maxlength="40" placeholder="Ex. : Vue large, Zoom, Infrarouge"></div>`;
       if(q && b.cadre){ const mx = maxCadreFor(srcW(q), srcH(q), rect.ratio); h += range("Zoom", "mzoom", Math.round(b.cadre.w/mx.w*100), 10, 100, " %"); }
-      h += `<div class="actions"><button type="button" class="btn small ghost" data-act="mcenter">Centrer</button><button type="button" class="btn small ghost" data-act="mmax">Cadre maximal</button>${m.bandes.length > 2 ? `<button type="button" class="btn small ghost danger" data-act="mdel">Retirer cette bande</button>` : ""}</div>`;
+      h += `<div class="actions"><button type="button" class="btn small ghost" data-act="mcenter">Centrer</button><button type="button" class="btn small ghost" data-act="mmax">Cadre maximal</button>${q ? `<button type="button" class="btn small ghost" data-ctab="${q.id}">Couleurs de cette photo</button>` : ""}${m.bandes.length > 2 ? `<button type="button" class="btn small ghost danger" data-act="mdel">Retirer cette bande</button>` : ""}</div>`;
       h += `<p class="hint">Sur l'image : touchez une bande pour la choisir, glissez la photo dans sa bande pour la cadrer, pincez ou molette pour zoomer. Les couleurs de chaque bande sont celles réglées sur sa photo.</p></div>`;
       h += range("Séparateur", "msep", m.sep, 0, 40) + `<div class="grp"><span class="lbl">Couleur du séparateur</span>${swatches(m.sepCouleur, "msepc")}</div>`;
     } else if(m.mode === "fusion" && m.fusion){
@@ -1607,7 +1615,7 @@ function renderPanel(){
       h += `<div class="grp"><span class="lbl">Qui est sur qui</span><div class="pair">`
         + `<div class="slot"><img src="${p.thumb}" alt=""><div><b>Dessous</b><span>${esc(p.name)}</span><small>la photo choisie dans la pellicule</small></div></div>`
         + `<div class="slot dessus"><img src="${q ? q.thumb : ""}" alt=""><div><b>Dessus</b><span>${q ? esc(q.name) : `<span class="miss">${esc(f.src || "aucune photo")}</span>`}</span><small>posée en transparence, à aligner</small></div></div></div>`
-        + (q && q !== p ? `<div class="actions" style="margin-top:8px"><button type="button" class="btn small ghost" data-act="mswap">Inverser : ${esc(q.name)} dessous</button></div>` : "") + `</div>`;
+        + (q && q !== p ? `<div class="actions" style="margin-top:8px"><button type="button" class="btn small ghost" data-act="mswap">Inverser : ${esc(q.name)} dessous</button><button type="button" class="btn small ghost" data-ctab="${q.id}">Couleurs du dessus</button><button type="button" class="btn small ghost" data-ctab="${p.id}">Couleurs du dessous</button></div>` : "") + `</div>`;
       h += `<div class="grp"><span class="lbl">Photo du dessus</span>${photoChips(p, q, "mfsrc", true)}</div>`;
       h += `<div class="grp"><span class="lbl">Voir sur l'aperçu</span>${chips([["deux","Les deux"],["dessous","Le dessous seul"],["dessus","Le dessus seul"]], S.mview, "mview")}<p class="hint">Pour vérifier qui est qui et l'alignement ; l'export contient toujours les deux.</p></div>`;
       h += `<div class="grp"><span class="lbl">Mode</span>${chips(FUSIONS, f.mode, "mblend")}<p class="hint">Fondu : transparence simple. Éclaircir : seules les parties plus claires que la photo ressortent (points chauds en blanc). Lumière : ajoute la lumière de l'infrarouge. Chaleur : seules les zones plus claires que le seuil restent visibles.</p></div>`;
@@ -1625,11 +1633,15 @@ function renderPanel(){
       h += `<p class="hint">Sur l'image : glissez la photo du dessus (cadre en pointillés, étiquette jaune), pincez ou tirez la poignée jaune pour sa taille, la bleue pour l'orienter, jusqu'à retrouver le même cadrage que la photo du dessous (baissez l'opacité pour voir les deux). Molette : taille.</p>`;
     } else if(S.photos.length < 2) h += `<p class="hint">Chargez aussi les autres vues du même moment (zoom, infrarouge) avec le bouton « + » de la pellicule, puis choisissez une composition. La photo choisie dans la pellicule est toujours la photo de base (celle du dessous).</p>`;
   } else if(S.tab === "couleur"){
-    const u = c.couleur;
-    h += `<div class="grp"><span class="lbl">Filtre</span>${chips(FILTRES.map(x => [x.id, x.nom]), c.filtre, "filtre")}</div>`;
+    const comp = composition(p), q = colorTarget(p), cq = q.cfg, u = cq.couleur;
+    if(comp.length > 1){
+      h += `<div class="grp"><span class="lbl">Image à régler</span><div class="chips">${comp.map(x => `<button type="button" class="chip pic" data-ctarget="${x.q.id}" aria-pressed="${x.q === q}"><img src="${x.q.thumb}" alt=""><span>${esc(x.role ? `${x.role} · ` : "")}${esc(x.q.name)}</span></button>`).join("")}</div>`;
+      h += `<p class="hint">${q === p ? "Les couleurs de la photo de base. Les autres photos du montage gardent leurs propres couleurs : choisissez-en une pour la régler en voyant le résultat dans le montage." : `Vous réglez les couleurs de ${esc(q.name)} telles qu'elles apparaissent dans ce montage (et partout où cette photo est utilisée : elles sont enregistrées dans sa fiche).`}</p></div>`;
+    }
+    h += `<div class="grp"><span class="lbl">Filtre</span>${chips(FILTRES.map(x => [x.id, x.nom]), cq.filtre, "filtre")}</div>`;
     h += range("Luminosité", "col=\"lum\"", u.lum, -100, 100) + range("Contraste", "col=\"contraste\"", u.contraste, -100, 100) + range("Saturation", "col=\"sat\"", u.sat, -100, 100)
       + range("Température (froid à chaud)", "col=\"temp\"", u.temp, -100, 100) + range("Vignettage", "col=\"vignette\"", u.vignette, 0, 100);
-    h += `<div class="actions"><button type="button" class="btn small ghost" data-act="colReset">Réinitialiser</button><button type="button" class="btn small ghost" data-act="colAll"${S.photos.length > 1 ? "" : " disabled"}>Appliquer à toutes les photos</button></div>`;
+    h += `<div class="actions"><button type="button" class="btn small ghost" data-act="colReset">Réinitialiser</button><button type="button" class="btn small ghost" data-act="colAll"${S.photos.length > 1 ? "" : " disabled"}>Appliquer à toutes les photos</button>${q !== p ? `<button type="button" class="btn small ghost" data-act="colSame">Mêmes réglages que la photo de base</button>` : ""}</div>`;
   } else if(S.tab === "flous"){
     const zs = c.flous || [], z = zs.find(x => x.id === S.fsel);
     h += `<div class="grp"><span class="lbl">Zones floutées (visages, plaques, lieux)</span><div class="chips">${zs.map((x, i) => `<button type="button" class="chip" data-fsel="${x.id}" aria-pressed="${x === z}">Flou ${i + 1}</button>`).join("")}<button type="button" class="chip add" data-act="addZone">+ Ajouter une zone</button></div>`;
@@ -1699,7 +1711,9 @@ function layerEditor(l){
   if(l.type === "zoom"){
     const p = selected(), q = zoomSrc(p, l), others = S.photos.filter(x => x !== p), o = outSize(p), u = o.W/1080;
     h += `<div class="grp"><span class="lbl">Contenu de la loupe</span><div class="chips"><button type="button" class="chip pic" data-lsrc="self" aria-pressed="${!l.src}"><img src="${p.thumb}" alt=""><span>Une zone de cette photo</span></button>${others.map(x => `<button type="button" class="chip pic" data-lsrc="${x.id}" aria-pressed="${x === q && !!l.src}"><img src="${x.thumb}" alt=""><span>${esc(x.name)}</span></button>`).join("")}</div>`;
-    h += `<p class="hint">${l.src ? (q ? `La photo ${esc(q.name)} (caméra zoom, thermique) est incrustée dans la loupe.` : `<span class="miss">Photo ${esc(l.src)} non chargée.</span>`) : "La loupe grossit la zone repérée par l'anneau sur la photo."}${others.length ? "" : " Pour incruster la photo de la caméra zoom ou thermique, chargez-la avec le bouton « + » de la pellicule."}</p></div>`;
+    h += `<p class="hint">${l.src ? (q ? `La photo ${esc(q.name)} (caméra zoom, thermique) est incrustée dans la loupe.` : `<span class="miss">Photo ${esc(l.src)} non chargée.</span>`) : "La loupe grossit la zone repérée par l'anneau sur la photo."}${others.length ? "" : " Pour incruster la photo de la caméra zoom ou thermique, chargez-la avec le bouton « + » de la pellicule."}</p>`;
+    if(l.src && q) h += `<div class="actions"><button type="button" class="btn small ghost" data-ctab="${q.id}">Couleurs de la photo incrustée</button></div>`;
+    h += `</div>`;
     h += `<div class="grp"><span class="lbl">Régler sur l'image</span>${chips(l.src ? [["calque","La loupe"],["contenu","Le cadrage dans la loupe"]] : [["calque","La loupe"],["zone","La zone grossie"]], S.lsub, "lsub")}`;
     h += `<p class="hint">${S.lsub === "zone" ? "Glissez l'anneau sur ce qu'il faut grossir, pincez ou tirez la poignée jaune pour sa taille." : S.lsub === "contenu" ? "Glissez la photo dans la loupe pour la cadrer, pincez ou molette pour zoomer." : "Glissez la loupe où elle gêne le moins, pincez ou tirez la poignée jaune pour sa taille."}</p></div>`;
     if(q){
@@ -1784,7 +1798,9 @@ $("panel").addEventListener("click", e => {
   const d = b.dataset, c = p.cfg;
   let redraw = true;
   if(d.fmt){ c.format = d.fmt; c.cadre = null; fixCadre(p); }
-  else if(d.filtre) c.filtre = d.filtre;
+  else if(d.filtre){ const q = colorTarget(p); q.cfg.filtre = d.filtre; if(q !== p){ q.cache = {}; persist(q); } }
+  else if(d.ctarget){ S.csrc = d.ctarget === p.id ? null : d.ctarget; renderPanel(); draw(); return; }
+  else if(d.ctab){ S.csrc = d.ctab === p.id ? null : d.ctab; goTab("couleur"); return; }
   else if(d.fsel){ S.fsel = d.fsel; }
   else if(d.fmode || d.fforce || d.fforme){ const z = c.flous.find(x => x.id === S.fsel); if(z){ if(d.fmode) z.mode = d.fmode; if(d.fforce) z.force = +d.fforce; if(d.fforme) z.forme = d.fforme; } }
   else if(d.addl){
@@ -1826,8 +1842,9 @@ $("panel").addEventListener("click", e => {
     }
     else if(a === "center"){ const m = maxCadre(p); c.cadre.x = m.x + (m.w - c.cadre.w)/2; c.cadre.y = m.y + (m.h - c.cadre.h)/2; fixCadre(p); }
     else if(a === "maxc"){ c.cadre = null; fixCadre(p); }
-    else if(a === "colReset"){ c.couleur = newCfg().couleur; c.filtre = "aucun"; }
-    else if(a === "colAll"){ S.photos.forEach(x => { if(x !== p){ x.cfg.couleur = Object.assign({}, c.couleur); x.cfg.filtre = c.filtre; x.cache = {}; persist(x); } }); toast("Couleurs et filtre appliqués à toutes les photos."); }
+    else if(a === "colReset"){ const q = colorTarget(p); q.cfg.couleur = newCfg().couleur; q.cfg.filtre = "aucun"; if(q !== p){ q.cache = {}; persist(q); } }
+    else if(a === "colAll"){ const q = colorTarget(p); S.photos.forEach(x => { if(x !== q){ x.cfg.couleur = Object.assign({}, q.cfg.couleur); x.cfg.filtre = q.cfg.filtre; x.cache = {}; if(x !== p) persist(x); } }); toast("Couleurs et filtre appliqués à toutes les photos."); }
+    else if(a === "colSame"){ const q = colorTarget(p); if(q !== p){ q.cfg.couleur = Object.assign({}, c.couleur); q.cfg.filtre = c.filtre; q.cache = {}; persist(q); } }
     else if(a === "addZone") addZone(p);
     else if(a === "dupZone"){ const z = c.flous.find(x => x.id === S.fsel); if(z){ const n = Object.assign({}, z, {id:uid(), x:clamp(z.x + z.w*0.6, 0, 1)}); c.flous.push(n); S.fsel = n.id; } }
     else if(a === "delZone"){ delZone(p); return; }
@@ -1866,7 +1883,7 @@ $("panel").addEventListener("input", e => {
   const d = t.dataset, c = p.cfg, v = +t.value;
   const lbl = t.parentElement && t.parentElement.querySelector(".val");
   if(d.zoom !== undefined){ const m = maxCadre(p), o = c.cadre, w = m.w*v/100, cxp = o.x + o.w/2, cyp = o.y + o.h/2; o.w = w; o.h = w*srcW(p)/srcH(p)/(fmtOf(c).w/fmtOf(c).h); o.x = cxp - o.w/2; o.y = cyp - o.h/2; fixCadre(p); }
-  else if(d.col){ c.couleur[d.col] = v; }
+  else if(d.col){ const q = colorTarget(p); q.cfg.couleur[d.col] = v; if(q !== p){ q.cache = {}; clearTimeout(S.inputT2); S.inputT2 = setTimeout(() => persist(q), 400); } }
   else if(d.meta){
     c.meta = c.meta || readMeta(null); c.meta[d.meta] = clean(t.value).slice(0, 300);
     if(d.meta !== "description") try { localStorage.setItem("esam-picture:meta", JSON.stringify({auteur:c.meta.auteur, droits:c.meta.droits})); } catch(err){}

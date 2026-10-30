@@ -227,6 +227,20 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   await page.screenshot({ path: path.join(caps, `${label}_montage_fusion_dessus.png`) });
   check((await page.getAttribute('[data-mview="dessus"]', "aria-pressed")) === "true", "aperçu « le dessus seul »");
   await page.click('[data-mview="deux"]');
+  // couleurs de la photo du dessus, réglées depuis le montage
+  await page.click('[data-ctab]:has-text("Couleurs du dessus")');
+  await page.waitForTimeout(200);
+  check((await page.getAttribute('[data-tab="couleur"]', "aria-selected")) === "true" && /^Dessus.*IMG_portrait\.jpg$/.test(await page.textContent('[data-ctarget][aria-pressed="true"]')), "onglet Couleur ouvert sur la photo du dessus");
+  await page.click('[data-filtre="nb"]');
+  await page.$eval('input[data-col="sat"]', el => { el.value = -40; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await page.waitForTimeout(600);
+  const cfTop = await page.evaluate(() => JSON.parse(localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith("esam-picture:IMG")))));
+  cf = await cfgOf();
+  check(cfTop.filtre === "nb" && cfTop.couleur.sat === -40 && cf.filtre === "esam" && cf.couleur.sat === 0, "couleurs du dessus enregistrées dans sa fiche, la photo de base inchangée");
+  await page.screenshot({ path: path.join(caps, `${label}_couleur_dessus.png`) });
+  await page.click('[data-ctarget]:has-text("Dessous")');
+  check((await page.getAttribute('[data-filtre="esam"]', "aria-pressed")) === "true", "retour aux couleurs de la photo de base");
+  await page.click('[data-tab="montage"]');
   await page.$eval('input[data-mop]', el => { el.value = 60; el.dispatchEvent(new Event("input", { bubbles: true })); });
   const b5 = await page.locator("#cv").boundingBox();
   await page.mouse.move(b5.x + b5.width / 2, b5.y + b5.height / 2); await page.mouse.down();
