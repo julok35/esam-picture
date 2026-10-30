@@ -23,10 +23,11 @@ Le CSS vient en premier (variables de la charte dans `:root`, mode sombre), puis
 | chargement | Décodage (orientation EXIF), image de travail, vignette, ajout à la pellicule | `decode`, `addPhotos` |
 | dossier de travail | `showDirectoryPicker` (Chrome, Edge) avec reprise par IndexedDB, repli `webkitdirectory`, écriture des fiches et des exports | `openDir`, `walkDir`, `importFolder`, `writeInDir`, `scheduleFicheWrite` |
 | rendu : base | Rotation, recadrage, mise à l'échelle, couleurs par pixel (tables par canal, saturation, teinte, vignettage) | `baseCanvas`, `applyColor`, `colorParams` |
+| rendu : montage | Composition avec d'autres photos chargées : bandeaux (bandes égales, cadre et étiquette par bande) ou superposition (photo posée en transparence, mode de fusion, fenêtre aux bords fondus) ; photos manquantes remplacées par un panneau | `readMontage`, `fixMontage`, `paneRects`, `montageCanvas`, `drawBandes`, `drawFusion`, `prepCanvas`, `heatCanvas`, `fusionBox`, `fenetreBox` |
 | rendu : flous | Zones converties dans le repère de sortie ; doux, pixelisé, dynamique ; masque aux bords fondus | `applyBlurs`, `blurredCanvas`, `downUp` |
 | rendu : calques | Logo (cartouche ou seul), titre, texte, légende, flèche et cercle au crayon, éléments de cadre (signature, montagne, biais, coin, carte) ; boîte de chaque calque | `drawLayer`, `drawBrand`, `textBlock`, `drawLegende`, `drawFleche`, `drawCercle`, `drawForme`, `drawCoin`, `drawSignature`, `drawCarte`, `pencil`, `renderAll` |
 | aperçu | Vue « cadre » (photo entière + cadre) ou « sortie » (image finale + poignées) ; `V` décrit l'espace courant | `draw`, `drawOutView`, `drawCropView`, `layoutCanvas` |
-| interactions | Un doigt : déplacer ou poignée (taille, rotation, largeur) ; deux doigts : pincement ; molette ; clavier ; grille magnétique des calques ; double toucher = saisie du texte | `curObj`, `pick`, `applyGesture`, `applyWidth`, `snapLayer`, `drawGrid`, événements `pointer*` |
+| interactions | Un doigt : déplacer ou poignée (taille, rotation, largeur) ; deux doigts : pincement ; molette ; clavier ; grille magnétique des calques ; double toucher = saisie du texte ; dans Montage : la photo d'une bande suit le doigt (son cadre va dans l'autre sens), la photo superposée ou sa fenêtre se manipule comme un calque | `curObj`, `pick`, `applyGesture`, `applyWidth`, `snapLayer`, `drawGrid`, événements `pointer*` |
 | pellicule et panneaux | Vignettes, sélection, onglets ; un panneau par onglet reconstruit par `renderPanel`, gestionnaires délégués sur `#panel` ; dans Calques, le réglage du calque choisi (`#leditor`) vient en tête du panneau | `renderFilm`, `select`, `renderPanel`, `layerEditor`, `revealEditor`, `focusEditor` |
 | export | Rendu plein format dans un cache à part, JPEG 92 %, métadonnées ESAM à la place de celles d'origine, dossier ou téléchargement, partage, export groupé | `renderExport`, `withMeta`, `exifSeg`, `xmpSeg`, `exportPhoto`, `sharePhoto`, `exportAll` |
 | vidéos | Pellicule, dialogue `#vdlg`, capture de l'image courante en pleine résolution | `addVideos`, `openVideo`, `videoThumb` |
@@ -51,6 +52,12 @@ calques    [{id, type, x, y, s, rot, ...}]  x, y en fraction de l'image de sorti
              legende {animal, date (AAAA-MM-JJ), secteur, couleur}   fleche {couleur, epais}   cercle {couleur, epais, ar}
              signature {texte, couleur}   montagne, biais {couleur, ar, op, miroir}   coin {coin: hg|hd|bg|bd, couleur}
              carte {texte, couleur, style: barre|plein, ar}
+montage    {mode: aucun|bandes|fusion, sens: v|h, sep, sepCouleur, bandes, fusion}  composition avec d'autres photos chargées
+             bandes [{src, cadre, etiquette}]  src = nom de fichier de la photo (null : la photo elle-même), cadre en fraction
+               de la source de cette photo au ratio de la bande (bandes égales, côte à côte si sens v, empilées si h)
+             fusion {src, x, y, s, rot, op, mode: fondu|eclaircir|ecran|chaleur, seuil, fenetre}  photo posée sur la base :
+               x, y en fraction de la sortie, s = largeur / largeur de sortie ; fenetre {forme: non|rect|ellipse, x, y, w, h,
+               fondu, contour} en fraction de la photo superposée (elle suit son alignement)
 grille     {aimant, n: 6|12|24}  grille magnétique des calques (pas carré W/n) ; la dernière valeur choisie sert de défaut
 meta       {auteur, droits, description}  métadonnées écrites dans le JPEG exporté ; auteur et droits choisis en dernier servent de défaut
 ```
@@ -59,11 +66,13 @@ Le titre ne revient à la ligne qu'aux retours saisis (sa taille ne dépend que 
 
 Une fiche se lit par `applyCfg`, qui tolère les champs absents ou inconnus. Dans un dossier de travail, la fiche de `Photo.jpg` est `Photo.jpg.esam.json` à côté d'elle.
 
+Le montage désigne les autres photos par leur nom (`src`, comparé au chemin puis au nom des photos chargées) ; chaque photo du montage est rendue avec les couleurs de sa propre fiche. Une photo absente donne un panneau « Photo manquante ». Avec le nommage DJI (`_W` vue large, `_Z` zoom, `_T` thermique), les bandes et la photo superposée sont proposées d'office (`kindOf`, `siblings`), avec des étiquettes par défaut. En bandeaux, le cadre de la fiche (`cadre`) n'est pas utilisé et les zones de flou sont en fraction de l'image de sortie (`cropRef`).
+
 ## 4. Pipeline de rendu
 
 `renderAll(ctx, p, W, H, cw, ch)` dessine dans un repère de sortie W x H (l'appelant applique l'échelle) :
 
-1. `baseCanvas` : source tournée, recadrée, mise à l'échelle cw x ch, puis `applyColor` (cache par clé format + cadre + rotation + couleur + filtre + taille).
+1. `baseCanvas` : la photo seule (`ownCanvas` : source tournée, recadrée, mise à l'échelle cw x ch, puis `applyColor`, cache par clé format + cadre + rotation + couleur + filtre + taille) ou le montage (`montageCanvas`, clé étendue au montage et aux fiches des photos référencées). Bandeaux : chaque bande est un recadrage de sa photo (`paneCanvas`) ; superposition : la photo superposée entière, tournée et colorée (`prepCanvas`, côté long limité à deux fois la base), dessinée dans un calque cw x ch avec sa transformation, masquée par la fenêtre (forme réduite puis adoucie par `downUp`), puis composée avec l'opacité et le mode (`globalCompositeOperation` : lighten, screen ; chaleur = alpha par luminance, `heatCanvas`). Les rendus intermédiaires sont gardés dans `p.cache.preps` (huit au plus).
 2. `blurredCanvas` : les zones de flou appliquées sur la base (cache par la liste des zones).
 3. Les calques dans l'ordre de la liste, chacun dans son repère (translation, rotation, échelle) ; `drawLayer` mémorise la boîte `_box` pour les poignées et la détection du doigt.
 
@@ -75,10 +84,11 @@ Flous sans `ctx.filter` : la région est réduite en plusieurs passes puis remon
 
 ## 5. Tests
 
-`node tests/test_fumee.mjs` : sert le dossier par HTTP, fabrique deux photos et une vidéo WebM dans le navigateur, puis en 390x844 (tactile) et 1400x900 : chargement, formats, zoom et déplacement du cadre, filtre et curseur de couleur, trois zones de flou, six calques, cinq éléments de cadre, saisie du texte à l'ajout, déplacement d'un calque à la souris, aimantation sur la grille et désactivation, export JPEG (nom, dimensions et métadonnées vérifiés : la photo de test porte un EXIF de téléphone avec auteur, date et GPS, absents de l'export), export de la fiche, reprise de la fiche dans une page vierge, extraction d'une image de vidéo. Captures dans `tests/captures/` (ignorées par git).
+`node tests/test_fumee.mjs` : sert le dossier par HTTP, fabrique deux photos et une vidéo WebM dans le navigateur, puis en 390x844 (tactile) et 1400x900 : chargement, formats, zoom et déplacement du cadre, filtre et curseur de couleur, trois zones de flou, six calques, cinq éléments de cadre, saisie du texte à l'ajout, déplacement d'un calque à la souris, aimantation sur la grille et désactivation, montage (bandeaux : choix et cadrage d'une bande à la souris, étiquette, bandes empilées ; superposition : opacité, déplacement de la photo superposée, fenêtre ovale déplacée, export du montage avec son suffixe), export JPEG (nom, dimensions et métadonnées vérifiés : la photo de test porte un EXIF de téléphone avec auteur, date et GPS, absents de l'export), export de la fiche, reprise de la fiche dans une page vierge, extraction d'une image de vidéo. Captures dans `tests/captures/` (ignorées par git).
 
 ## 6. Changelog
 
+- 0.4 (2026-10-30) : onglet Montage. Bandeaux : plusieurs photos (vue large, zoom, infrarouge) sur une même image, côte à côte ou empilées, chaque bande cadrée au doigt avec une étiquette, séparateur réglable. Superposition : la photo infrarouge posée en transparence sur la photo et alignée dessus (déplacement, zoom, rotation fine, opacité, modes fondu, éclaircir, lumière, chaleur), limitée au besoin à une fenêtre rectangle ou ovale aux bords fondus. Photos DJI (_W, _Z, _T) proposées d'office.
 - 0.3 (2026-10-29) : les photos exportées et les images extraites des vidéos ne contiennent plus aucune métadonnée d'origine (localisation, date, auteur, appareil) ; elles portent à la place les métadonnées ESAM (auteur, droits, description facultative), réglables dans l'onglet Export.
 - 0.2 (2026-10-28) : grille magnétique pour les calques (large, moyenne, fine ou désactivée) ; éléments de cadre : signature ESAM, montagne, biais, coin aux bandes ESAM, carte ; le réglage du calque choisi s'affiche en haut du panneau, la saisie du texte s'ouvre à l'ajout ou d'un double toucher ; le titre ne revient plus à la ligne tout seul, le texte a une largeur de zone réglable (poignée blanche).
 - 0.1 (2026-10-28) : première version : photos de la galerie, des fichiers ou d'un dossier de travail ; extraction d'images d'une vidéo ; cadre aux formats des réseaux ; couleurs et filtres ; flous doux, pixelisé, dynamique ; logo, titre, texte, légende, flèche, cercle ; export JPEG, partage, fiche de configuration JSON.
