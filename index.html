@@ -103,6 +103,15 @@ input[type=range]:focus-visible{outline:none}
 .film .th .ok{position:absolute;left:4px;top:4px;width:12px;height:12px;border-radius:50%;background:#2fa75a;border:1.5px solid #fff}
 .film .th.vid .play{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:22px;text-shadow:0 1px 4px rgba(0,0,0,.8);background:rgba(0,0,0,.25)}
 .film .th.vid .n{position:absolute;right:3px;bottom:3px;background:var(--yellow);color:#171618;font-size:11px;font-weight:700;border-radius:8px;padding:0 5px}
+.film .th .role{position:absolute;left:0;right:0;bottom:0;background:rgba(23,22,24,.82);color:var(--yellow);font-size:10px;font-weight:700;text-align:center;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 3px}
+.pair{display:flex;gap:8px;flex-wrap:wrap}
+.slot{flex:1;min-width:150px;display:flex;align-items:center;gap:10px;border:2px solid var(--line);border-radius:12px;padding:6px 10px}
+.slot>div{min-width:0}
+.slot img{width:52px;height:52px;border-radius:8px;object-fit:cover;background:var(--soft);flex:none}
+.slot b{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+.slot span{display:block;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.slot small{display:block;font-size:11px;color:var(--muted)}
+.slot.dessus{border-color:var(--yellow);background:var(--paleyellow)}
 .film .th.add{display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:300;color:var(--muted);border-style:dashed}
 
 /* ---------- scène (aperçu) ---------- */
@@ -240,7 +249,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 /* Photos ESAM : préparation d'images pour les réseaux sociaux. Un seul fichier, pas de build, ES2017.
    Sections : utils, modèle, formats, chargement, dossier de travail, rendu (base, couleur, flous, calques),
    aperçu et interactions, panneaux, export, démarrage. Voir docs/ARCHITECTURE.md. */
-const APP_VERSION = "0.4";
+const APP_VERSION = "0.7";
 const $ = id => document.getElementById(id);
 
 /* ---------- utils ---------- */
@@ -290,10 +299,14 @@ function wrapLines(ctx, txt, maxW){
      format, cadre {x, y, w, h} en fraction de l'image source, rotation (0/90/180/270),
      couleur {lum, contraste, sat, temp, vignette} de -100 à 100, filtre,
      flous [{id, forme, mode, force, x, y, w, h}] en fraction de l'image source (centre et taille),
-     calques [{id, type, x, y, s, rot, ...}] : x, y en fraction de l'image de sortie, s = échelle, rot en degrés,
+     calques [{id, type, x, y, s, rot, ex, ey, ...}] : x, y en fraction de l'image de sortie, s = échelle, rot en degrés,
+       ex, ey = étirement horizontal et vertical (poignées blanches) ; les calques à largeur ou hauteur propre (texte larg,
+       ar, hr) les règlent à la place sans déformer leur contenu,
+       zoom (loupe) : src (null = une zone de cette photo, sinon le nom d'une autre photo chargée : caméra zoom, thermique),
+       zone {x, y, w} centre et largeur en fraction de la source grossie, forme cercle|rect, ar, couleur, epais, lien, etiquette,
      montage {mode, sens, sep, sepCouleur, bandes, fusion} : composition avec d'autres photos chargées (voir « rendu : montage »). */
 const pendingFiches = {};   // fiches importées avant leurs photos, par nom de fichier
-const S = {photos:[], sel:null, tab:"cadre", mode:"calques", dirHandle:null, dirWritable:false, fsel:null, csel:null, msel:0, msub:"calque", secteurs:[]};
+const S = {photos:[], sel:null, tab:"cadre", mode:"calques", dirHandle:null, dirWritable:false, fsel:null, csel:null, lsub:"calque", csrc:null, msel:0, msub:"calque", mview:"deux", secteurs:[]};
 const FORMATS = [
   {id:"carre", nom:"Carré 1:1", res:"Instagram, Facebook, LinkedIn", w:1080, h:1080},
   {id:"portrait", nom:"Portrait 4:5", res:"Instagram, Facebook", w:1080, h:1350},
@@ -314,9 +327,9 @@ const FILTRES = [
 ];
 const COULEURS = [["#F9DD10","Jaune ESAM"],["#E20C0F","Rouge"],["#FFFFFF","Blanc"],["#171618","Noir"],["#A8C8FB","Bleu ESAM"],["#2fa75a","Vert"]];
 const MODES_FLOU = [["doux","Doux"],["pixel","Pixelisé"],["dynamique","Dynamique"]];
-const TYPES = {logo:"Logo ESAM", titre:"Titre", texte:"Texte", legende:"Légende", fleche:"Flèche", cercle:"Cercle",
+const TYPES = {logo:"Logo ESAM", titre:"Titre", texte:"Texte", legende:"Légende", fleche:"Flèche", cercle:"Cercle", zoom:"Zoom incrusté",
   signature:"Signature", montagne:"Montagne", biais:"Biais", coin:"Coin", carte:"Carte"};
-const PHOTO_T = ["logo", "titre", "texte", "legende", "fleche", "cercle"], DECOR_T = ["signature", "montagne", "biais", "coin", "carte"];
+const PHOTO_T = ["logo", "titre", "texte", "legende", "fleche", "cercle", "zoom"], DECOR_T = ["signature", "montagne", "biais", "coin", "carte"];
 const COINS = {bd:0, bg:90, hg:180, hd:270};   // coin occupé -> rotation du motif (dessiné pour le coin bas droite)
 const GRILLES = [6, 12, 24];                   // nombre de colonnes de la grille magnétique
 function fmtOf(cfg){ return FORMATS.find(f => f.id === cfg.format) || FORMATS[0]; }
@@ -385,7 +398,13 @@ function applyCfg(p, d){
   if(FILTRES.some(f => f.id === d.filtre)) c.filtre = d.filtre;
   c.flous = (Array.isArray(d.flous) ? d.flous : []).map(z => ({id:z.id || uid(), forme:z.forme === "rect" ? "rect" : "ellipse", mode:MODES_FLOU.some(m => m[0] === z.mode) ? z.mode : "doux",
     force:clamp(+z.force || 2, 1, 3), x:clamp(+z.x || 0.5, 0, 1), y:clamp(+z.y || 0.5, 0, 1), w:clamp(+z.w || 0.2, 0.02, 1), h:clamp(+z.h || 0.2, 0.02, 1), angle:+z.angle || 0}));
-  c.calques = (Array.isArray(d.calques) ? d.calques : []).filter(l => TYPES[l.type]).map(l => Object.assign(defLayer(l.type), l.type === "texte" && l.larg == null ? {larg:0.9} : {}, l, {id:l.id || uid(), x:clamp(+l.x || 0.5, -0.2, 1.2), y:clamp(+l.y || 0.5, -0.2, 1.2), s:clamp(+l.s || 1, 0.2, 5), rot:+l.rot || 0}));
+  c.calques = (Array.isArray(d.calques) ? d.calques : []).filter(l => TYPES[l.type]).map(l => Object.assign(defLayer(l.type), l.type === "texte" && l.larg == null ? {larg:0.9} : {}, l, {id:l.id || uid(), x:clamp(+l.x || 0.5, -0.2, 1.2), y:clamp(+l.y || 0.5, -0.2, 1.2), s:clamp(+l.s || 1, 0.2, 5), rot:+l.rot || 0, ex:clamp(+l.ex || 1, 0.2, 5), ey:clamp(+l.ey || 1, 0.2, 5)}));
+  c.calques.forEach(l => { if(l.hr != null) l.hr = clamp(+l.hr || 1, 0.3, 3); });
+  c.calques.filter(l => l.type === "zoom").forEach(l => {
+    const z = l.zone && typeof l.zone === "object" ? l.zone : {}, old = l.hr == null;   // fiche d'avant 0.7 : la loupe ronde ignorait ar, le rectangle faisait 420 x 420 unités
+    l.src = typeof l.src === "string" && l.src ? clean(l.src) : null; l.zone = {x:clamp(+z.x || 0.5, 0, 1), y:clamp(+z.y || 0.5, 0, 1), w:clamp(+z.w || 0.18, 0.02, 1)};
+    l.forme = l.forme === "rect" ? "rect" : "cercle"; l.ar = clamp(old ? (l.forme === "rect" ? (+l.ar || 1.4)*420/560 : 1) : +l.ar || 1, 0.3, 3); l.hr = clamp(old ? (l.forme === "rect" ? 420/400 : 1) : +l.hr || 1, 0.3, 3); l.epais = clamp(Math.round(+l.epais) || 2, 0, 3); l.lien = l.lien !== false; l.etiquette = clean(l.etiquette || "").slice(0, 40);
+  });
   c.montage = readMontage(d.montage);
   if(d.grille && typeof d.grille === "object") c.grille = readGrille(d.grille);
   if(d.meta && typeof d.meta === "object") c.meta = readMeta(d.meta);
@@ -393,23 +412,25 @@ function applyCfg(p, d){
   return true;
 }
 function defLayer(type){
-  const base = {id:uid(), type:type, x:0.5, y:0.5, s:1, rot:0};
+  const base = {id:uid(), type:type, x:0.5, y:0.5, s:1, rot:0, ex:1, ey:1};
   if(type === "logo") return Object.assign(base, {mode:"cartouche", x:0.5, y:0.1});
   if(type === "titre") return Object.assign(base, {texte:"", couleur:"#FFFFFF", fond:"ombre", y:0.3});
   if(type === "texte") return Object.assign(base, {texte:"", couleur:"#FFFFFF", fond:"ombre", y:0.5, larg:0.8});
   if(type === "legende") return Object.assign(base, {animal:"", date:today(), secteur:"", couleur:"#F9DD10", x:0.5, y:0.9});
   if(type === "fleche") return Object.assign(base, {couleur:"#F9DD10", epais:2});
   if(type === "cercle") return Object.assign(base, {couleur:"#F9DD10", epais:2, ar:1.3});
+  if(type === "zoom") return Object.assign(base, {src:null, zone:{x:0.5, y:0.5, w:0.18}, forme:"cercle", ar:1, hr:1, couleur:"#F9DD10", epais:2, lien:true, etiquette:"", x:0.74, y:0.74});
   if(type === "signature") return Object.assign(base, {texte:"Équipe de Secours Animalier en Montagne", couleur:"#171618", x:0.36, y:0.93});
   if(type === "montagne") return Object.assign(base, {couleur:"#A8C8FB", ar:1, op:100, miroir:false, x:0.71, y:0.85});
   if(type === "biais") return Object.assign(base, {couleur:"#A8C8FB", ar:1, op:100, miroir:false, x:0.12, y:0.13});
   if(type === "coin") return Object.assign(base, {couleur:"#171618", coin:"bd"});
-  if(type === "carte") return Object.assign(base, {texte:"", couleur:"#E20C0F", style:"barre", ar:1});
+  if(type === "carte") return Object.assign(base, {texte:"", couleur:"#E20C0F", style:"barre", ar:1, hr:1});
   return base;
 }
 function layerName(l){
   if(l.type === "titre" || l.type === "texte" || l.type === "carte") return l.texte ? `${TYPES[l.type]} : ${clean(l.texte).slice(0, 24)}` : TYPES[l.type];
   if(l.type === "legende") return l.animal ? `Légende : ${clean(l.animal)}` : "Légende";
+  if(l.type === "zoom") return l.src ? `Zoom : ${clean(l.src).slice(0, 24)}` : "Zoom : zone de la photo";
   return TYPES[l.type];
 }
 
@@ -816,14 +837,16 @@ function drawFusion(ctx, p, f, cw, ch){
     mx.translate(box.cx, box.cy); mx.rotate(box.rot); mx.fillStyle = "#000"; shapePath(mx, w.forme, fx, fy, fw - feather, fh - feather, u); mx.fill();
     lx.setTransform(1, 0, 0, 1, 0, 0); lx.globalCompositeOperation = "destination-in"; lx.drawImage(feather ? downUp(mk, Math.max(1.5, feather/2), true) : mk, 0, 0);
   }
-  ctx.save(); ctx.globalAlpha = clamp(f.op/100, 0, 1); ctx.globalCompositeOperation = BLEND[f.mode] || "source-over"; ctx.drawImage(layer, 0, 0); ctx.restore();
+  const solo = p.cfg.montage._vue === "dessus";   // aperçu « le dessus seul » : opaque, sur la base assombrie
+  if(solo){ ctx.save(); ctx.fillStyle = "rgba(0,0,0,.7)"; ctx.fillRect(0, 0, cw, ch); ctx.restore(); }
+  ctx.save(); ctx.globalAlpha = solo ? 1 : clamp(f.op/100, 0, 1); ctx.globalCompositeOperation = solo ? "source-over" : BLEND[f.mode] || "source-over"; ctx.drawImage(layer, 0, 0); ctx.restore();
   if(w.forme !== "non" && w.contour){ ctx.save(); ctx.translate(box.cx, box.cy); ctx.rotate(box.rot); ctx.lineWidth = 5*u; ctx.strokeStyle = w.contour; shapePath(ctx, w.forme, fx, fy, fw, fh, u); ctx.stroke(); ctx.restore(); }
 }
 function montageCanvas(p, cw, ch){
   const m = p.cfg.montage; if(!m || m.mode === "aucun") return null;
   const c = mkCanvas(cw, ch), ctx = c.getContext("2d");
   if(m.mode === "bandes") drawBandes(ctx, p, m, cw, ch);
-  else { ctx.drawImage(ownCanvas(p, cw, ch), 0, 0); if(m.fusion) drawFusion(ctx, p, m.fusion, cw, ch); }
+  else { ctx.drawImage(ownCanvas(p, cw, ch), 0, 0); if(m.fusion && m._vue !== "dessous") drawFusion(ctx, p, m.fusion, cw, ch); }
   return c;
 }
 /* repère des zones de flou : la source (via le cadre) pour une photo seule ou une superposition, l'image de sortie pour des bandeaux */
@@ -1002,6 +1025,88 @@ function drawCercle(ctx, u, l){
   ctx.restore();
   return {w:rx*2.2 + w, h:ry*2.2 + w};
 }
+/* ---------- calque zoom (loupe) ----------
+   Une loupe ronde ou rectangulaire posée sur l'image. Elle grossit une zone de la photo elle-même (src null : la zone est
+   repérée sur l'image par un anneau relié à la loupe par un trait) ou incruste une autre photo chargée (caméra zoom,
+   thermique : src = nom de fichier), cadrée dans la loupe. zone = {x, y, w} : centre et largeur en fraction de la source
+   grossie ; la hauteur suit la forme de la loupe. Le contenu vient de la source pleine résolution (couleurs de sa fiche) ;
+   si la zone touche une zone floutée, ou en bandeaux, il vient de l'image de base déjà floutée (le flou reste effectif). */
+const LOUPE = {cercle:[380, 380], rect:[560, 400]};   // tailles de référence en unités u (échelle 1, ar et hr à 1)
+function loupeSize(u, l){ const d = LOUPE[l.forme === "rect" ? "rect" : "cercle"]; return {w:d[0]*(l.ar || 1)*u, h:d[1]*(l.hr || 1)*u}; }
+function zoomSrc(p, l){ return l.src ? photoOf(p, l.src) : p; }
+/* le contenu de la loupe vient-il de l'image de base (déjà composée et floutée) plutôt que de la photo d'origine ?
+   (la zone, elle, reste toujours dans le repère des flous : la source, ou la sortie en bandeaux) */
+function zoomFromBase(p, l){
+  if(l.src) return false;
+  if(isBandes(p)) return true;
+  const z = l.zone, hw = z.w/2, hh = z.w*zoneRatio({sw:srcW(p), sh:srcH(p)}, l, 1)/2;   // demi-tailles de la zone, en fraction de la source
+  return (p.cfg.flous || []).some(f => Math.abs(f.x - z.x) < hw + (f.w + f.h)/2 && Math.abs(f.y - z.y) < hh + (f.w + f.h)/2);
+}
+/* dimensions de la source grossie (la photo d'origine tournée, ou l'image de sortie) */
+function zoomDims(p, l, q){ if(l.src ? !q : isBandes(p)){ const o = outSize(p); return {sw:o.W, sh:o.H}; } return {sw:srcW(q), sh:srcH(q)}; }
+function zoneRatio(dims, l, u){ const b = loupeSize(u, l); return dims.sw/dims.sh*b.h/b.w; }   // hauteur / largeur de la zone, en fractions
+/* borne la zone dans sa source (mutation tolérante, comme placeCoin) */
+function fitZone(p, l, dims, u){
+  const k = zoneRatio(dims, l, u), z = l.zone;
+  z.w = clamp(z.w, 0.02, Math.min(1, 1/k)); const h = z.w*k;
+  z.x = clamp(z.x, z.w/2, 1 - z.w/2); z.y = clamp(z.y, h/2, 1 - h/2);
+}
+function zoneCadre(l, dims, u){ const z = l.zone, h = z.w*zoneRatio(dims, l, u); return {x:z.x - z.w/2, y:z.y - h/2, w:z.w, h:h}; }
+/* boîte de la zone grossie dans le repère de sortie o (photo elle-même) */
+function zoneBox(p, l, o){
+  const u = o.W/1080, c = cropRef(p), b = loupeSize(u, l), z = l.zone;   // la zone est en fraction de la source (de la sortie en bandeaux, comme les flous)
+  const ow = z.w/c.w*o.W;
+  return {cx:(z.x - c.x)/c.w*o.W, cy:(z.y - c.y)/c.h*o.H, hw:ow/2, hh:ow*b.h/b.w/2, rot:0};
+}
+/* contenu de la loupe (w x h pixels), en cache */
+function loupeCanvas(p, l, q, cadre, w, h, cw, ch){
+  const fromBase = l.src ? false : zoomFromBase(p, l);
+  return cached(p, JSON.stringify(["loupe", l.id, q.id, cadre, w, h, fromBase, q.cfg.rotation, q.cfg.couleur, q.cfg.filtre, fromBase ? [cw, ch] : 0]), () => {
+    if(!fromBase) return cropCanvas(q, cadre, w, h);
+    const base = blurredCanvas(p, cw, ch), c = mkCanvas(w, h), x = c.getContext("2d");
+    const cr = isBandes(p) ? cadre : (() => { const k = cropRef(p); return {x:(cadre.x - k.x)/k.w, y:(cadre.y - k.y)/k.h, w:cadre.w/k.w, h:cadre.h/k.h}; })();
+    x.imageSmoothingQuality = "high"; x.drawImage(base, cr.x*base.width, cr.y*base.height, cr.w*base.width, cr.h*base.height, 0, 0, w, h); return c;
+  });
+}
+function loupePath(ctx, l, w, h, u){ shapePath(ctx, l.forme === "rect" ? "rect" : "ellipse", 0, 0, w, h, 2*u); }
+/* distance du centre au bord d'une forme (ellipse ou rectangle de demi-tailles rx, ry) dans la direction (dx, dy) normalisée */
+function edgeDist(rect, rx, ry, dx, dy){ return rect ? Math.min(Math.abs(dx) > 1e-6 ? rx/Math.abs(dx) : 1e9, Math.abs(dy) > 1e-6 ? ry/Math.abs(dy) : 1e9) : 1/Math.sqrt((dx/rx)*(dx/rx) + (dy/ry)*(dy/ry)); }
+/* anneau de la zone grossie et trait de liaison vers la loupe, dans le repère de sortie (photo elle-même seulement) */
+function drawZoomLien(ctx, l, p, W, H){
+  const u = W/1080, zb = zoneBox(p, l, {W:W, H:H}), col = l.couleur || "#F9DD10", lw = [0, 3, 5, 8][l.epais == null ? 2 : l.epais]*u, rect = l.forme === "rect";
+  if(!lw) return;
+  ctx.save(); ctx.shadowColor = "rgba(0,0,0,.4)"; ctx.shadowBlur = 4*u; ctx.lineWidth = lw; ctx.strokeStyle = col; ctx.lineCap = "round";
+  shapePath(ctx, rect ? "rect" : "ellipse", zb.cx, zb.cy, zb.hw*2, zb.hh*2, 2*u); ctx.stroke();
+  if(l.lien){
+    const b = loupeSize(u, l), lx = l.x*W, ly = l.y*H, dx = lx - zb.cx, dy = ly - zb.cy, d = Math.hypot(dx, dy);
+    if(d > 1){
+      const nx = dx/d, ny = dy/d, a = -(l.rot || 0)*Math.PI/180, c = Math.cos(a), s = Math.sin(a);
+      const d1 = edgeDist(rect, zb.hw, zb.hh, nx, ny), d2 = edgeDist(rect, b.w/2*l.s, b.h/2*l.s, nx*c - ny*s, nx*s + ny*c);   // bord de la loupe, dans son repère tourné
+      if(d - d1 - d2 > lw){ ctx.beginPath(); ctx.moveTo(zb.cx + nx*d1, zb.cy + ny*d1); ctx.lineTo(lx - nx*d2, ly - ny*d2); ctx.stroke(); }
+    }
+  }
+  ctx.restore();
+}
+function drawZoom(ctx, u, l, p, cw, ch){
+  const b = loupeSize(u, l), q = zoomSrc(p, l), lw = [0, 5, 9, 14][l.epais == null ? 2 : l.epais]*u, col = l.couleur || "#F9DD10";
+  ctx.save(); loupePath(ctx, l, b.w, b.h, u);
+  ctx.shadowColor = "rgba(0,0,0,.45)"; ctx.shadowBlur = 18*u; ctx.shadowOffsetY = 6*u; ctx.fillStyle = "#171618"; ctx.fill(); ctx.shadowColor = "transparent";
+  ctx.clip();
+  if(q){
+    const dims = zoomDims(p, l, q); fitZone(p, l, dims, u);
+    const pw = clamp(Math.round(b.w*l.s/16)*16, 64, 2048), ph = Math.max(16, Math.round(pw*b.h/b.w));   // résolution de l'export, par pas de 16
+    ctx.imageSmoothingQuality = "high"; ctx.drawImage(loupeCanvas(p, l, q, zoneCadre(l, dims, u), pw, ph, cw, ch), -b.w/2, -b.h/2, b.w, b.h);
+  } else placeholder(ctx, {x:-b.w/2, y:-b.h/2, w:b.w, h:b.h}, l.src, u*0.75);
+  ctx.restore();
+  if(lw){ ctx.save(); loupePath(ctx, l, b.w, b.h, u); ctx.lineWidth = lw; ctx.strokeStyle = col; ctx.stroke(); ctx.restore(); }
+  if(l.etiquette){
+    const txt = clean(l.etiquette), fs = 30*u, px = 14*u, h = fs*1.5;
+    ctx.save(); ctx.font = `${fs}px ${ANTON}`; const tw = Math.min(ctx.measureText(txt).width, b.w*0.8), w = tw + 2*px, y = b.h/2 - h - (l.forme === "rect" ? 16 : 34)*u;
+    ctx.fillStyle = "rgba(23,22,24,.78)"; rRound(ctx, -w/2, y, w, h, 8*u); ctx.fill();
+    ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(txt, 0, y + h/2 + fs*0.05, tw); ctx.restore();
+  }
+  return {w:b.w + lw, h:b.h + lw};
+}
 /* éléments de cadre (décor de mise en page, comme sur les visuels ESAM) */
 const DECOR = {
   montagne:{w:620, h:330, pts:[[0,1],[0.094,0.64],[0.636,0.64],[0.799,0],[1,0.104],[1,1]]},
@@ -1037,7 +1142,7 @@ function drawSignature(ctx, u, l){
 function drawCarte(ctx, u, l){
   const w = 320*u*(l.ar || 1), fs = 34*u, pad = 22*u, bar = 9*u, plein = l.style === "plein", col = l.couleur || "#E20C0F";
   ctx.font = `700 ${fs}px ${MONT}`;
-  const lines = wrapLines(ctx, l.texte || "Carte", w - 2*pad), h = Math.max(150*u, lines.length*fs*1.25 + 2*pad + bar);
+  const lines = wrapLines(ctx, l.texte || "Carte", w - 2*pad), h = Math.max(150*u*(l.hr || 1), lines.length*fs*1.25 + 2*pad + bar);
   ctx.save(); ctx.shadowColor = "rgba(0,0,0,.18)"; ctx.shadowBlur = 10*u; ctx.shadowOffsetY = 2*u;
   ctx.fillStyle = plein ? col : "#F3F4F6"; rRound(ctx, -w/2, -h/2, w, h, 14*u); ctx.fill(); ctx.restore();
   if(!plein){ ctx.save(); rRound(ctx, -w/2, -h/2, w, h, 14*u); ctx.clip(); ctx.fillStyle = col; ctx.fillRect(-w/2, -h/2, w, bar); ctx.restore(); }
@@ -1047,10 +1152,12 @@ function drawCarte(ctx, u, l){
   lines.forEach((t, i) => { ctx.fillText(t, 0, mid + (i - (lines.length - 1)/2)*fs*1.25); });
   return {w:w, h:h};
 }
-function drawLayer(ctx, l, W, H){
+function drawLayer(ctx, l, W, H, p, cw, ch){
   const u = W/1080;
   if(l.type === "coin") placeCoin(l, W, H);
-  ctx.save(); ctx.translate(l.x*W, l.y*H); ctx.rotate((l.rot || 0)*Math.PI/180); ctx.scale(l.s, l.s);
+  if(l.type === "zoom" && !l.src && p) drawZoomLien(ctx, l, p, W, H);   // l'anneau de la zone et son trait restent dans le repère de l'image
+  const ex = l.ex || 1, ey = l.ey || 1;
+  ctx.save(); ctx.translate(l.x*W, l.y*H); ctx.rotate((l.rot || 0)*Math.PI/180); ctx.scale(l.s*ex, l.s*ey);
   let box;
   if(l.type === "logo") box = drawBrand(ctx, u, l.mode);
   else if(l.type === "titre") box = textBlock(ctx, u, l, W, true);
@@ -1058,19 +1165,20 @@ function drawLayer(ctx, l, W, H){
   else if(l.type === "legende") box = drawLegende(ctx, u, l);
   else if(l.type === "fleche") box = drawFleche(ctx, u, l);
   else if(l.type === "cercle") box = drawCercle(ctx, u, l);
+  else if(l.type === "zoom") box = drawZoom(ctx, u, l, p, cw, ch);
   else if(l.type === "montagne" || l.type === "biais") box = drawForme(ctx, u, l);
   else if(l.type === "coin") box = drawCoin(ctx, u, l);
   else if(l.type === "signature") box = drawSignature(ctx, u, l);
   else if(l.type === "carte") box = drawCarte(ctx, u, l);
   ctx.restore();
-  l._box = {w:(box ? box.w : 10)*l.s, h:(box ? box.h : 10)*l.s, s:l.s};
+  l._box = {w:(box ? box.w : 10)*l.s*ex, h:(box ? box.h : 10)*l.s*ey, s:l.s};
   return l._box;
 }
 /* rendu complet dans ctx (repère de sortie W x H, déjà mis à l'échelle par l'appelant) */
 function renderAll(ctx, p, W, H, cw, ch){
   const img = blurredCanvas(p, cw, ch);
   ctx.drawImage(img, 0, 0, cw, ch, 0, 0, W, H);
-  p.cfg.calques.forEach(l => drawLayer(ctx, l, W, H));
+  p.cfg.calques.forEach(l => drawLayer(ctx, l, W, H, p, cw, ch));
 }
 async function fontsReady(){
   if(S.fonts) return;
@@ -1116,19 +1224,22 @@ const HR = 14;   // rayon des poignées en px CSS, x dpr dans le canvas
 function handleR(){ return hx(HR*Math.min(2, window.devicePixelRatio || 1)); }
 /* boîte tournée d'un objet : centre (cx, cy), demi-tailles, rotation ; dessine le contour et les poignées
    (coin bas droit = taille, au-dessus = rotation, milieu du bord droit = largeur de la zone) */
-function drawBox(ctx, b, withRot, withWid){
+function drawBox(ctx, b, withRot, withWid, withHgt){
   ctx.save(); ctx.translate(b.cx, b.cy); ctx.rotate(b.rot || 0);
   handleStyle(ctx); ctx.strokeRect(-b.hw, -b.hh, b.hw*2, b.hh*2);
   const r = handleR();
   if(withRot){ ctx.setLineDash([]); ctx.beginPath(); ctx.moveTo(0, -b.hh); ctx.lineTo(0, -b.hh - r*2.4); ctx.stroke(); dot(ctx, 0, -b.hh - r*2.4, r*0.8, "#A8C8FB"); }
-  dot(ctx, b.hw, b.hh, r*0.8, "#F9DD10");
+  if(!b.nohand) dot(ctx, b.hw, b.hh, r*0.8, "#F9DD10");
   if(withWid) dot(ctx, b.hw, 0, r*0.7, "#FFFFFF");
+  if(withHgt) dot(ctx, 0, b.hh, r*0.7, "#FFFFFF");
   ctx.restore();
 }
 function drawOutView(p){
   const o = outSize(p); layoutCanvas(o.W, o.H);
   const ctx = cx2; ctx.setTransform(V.k, 0, 0, V.k, 0, 0); V.space = "out";
-  renderAll(ctx, p, o.W, o.H, cv.width, cv.height);
+  const vue = S.tab === "montage" && montMode(p) === "fusion" && S.mview !== "deux" ? S.mview : null;   // vue d'aperçu, jamais dans la fiche ni l'export
+  if(vue) p.cfg.montage._vue = vue;
+  try { renderAll(ctx, p, o.W, o.H, cv.width, cv.height); } finally { delete p.cfg.montage._vue; }
   if(S.tab === "flous"){
     (p.cfg.flous || []).forEach((z, i) => {
       const r = zoneOut(z, p, o.W, o.H), sel = z.id === S.fsel;
@@ -1143,7 +1254,11 @@ function drawOutView(p){
   } else if(S.tab === "calques" || S.tab === "export"){
     const l = p.cfg.calques.find(x => x.id === S.csel);
     if(S.tab === "calques" && G.act && gridOn(p)) drawGrid(ctx, p, o);
-    if(l && l._box && S.tab === "calques") drawBox(ctx, {cx:l.x*o.W, cy:l.y*o.H, hw:l._box.w/2, hh:l._box.h/2, rot:(l.rot || 0)*Math.PI/180}, l.type !== "coin", hasWid(l));
+    if(l && l._box && S.tab === "calques"){
+      const sub = l.type === "zoom" && S.lsub !== "calque" ? curObj(p) : null;
+      if(sub && sub.kind !== "calque") drawBox(ctx, sub, false, false);
+      else drawBox(ctx, {cx:l.x*o.W, cy:l.y*o.H, hw:l._box.w/2, hh:l._box.h/2, rot:(l.rot || 0)*Math.PI/180}, l.type !== "coin", hasWid(l), hasHgt(l));
+    }
   } else if(S.tab === "montage"){
     const m = p.cfg.montage, dpr = Math.min(2, window.devicePixelRatio || 1);
     if(m.mode === "bandes"){
@@ -1155,15 +1270,29 @@ function drawOutView(p){
         dot(ctx, bx, by, rr, sel ? "#F9DD10" : "#fff");
         ctx.fillStyle = "#171618"; ctx.font = `700 ${hx(12*dpr)}px ${MONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(String(i + 1), bx, by);
         ctx.restore();
+        const q = photoOf(p, m.bandes[i].src); tagOn(ctx, r.x + hx(6), r.y + hx(6), q ? q.name : "Photo manquante", sel ? "#F9DD10" : "rgba(23,22,24,.85)", sel ? "#171618" : "#fff", null);
       });
     } else if(m.mode === "fusion" && m.fusion){
       const f = m.fusion, b = fusionBox(p, f, o), fen = f.fenetre && f.fenetre.forme !== "non";
       ctx.save(); ctx.translate(b.cx, b.cy); ctx.rotate(b.rot); ctx.lineWidth = hx(1.2); ctx.strokeStyle = "rgba(255,255,255,.7)"; ctx.setLineDash([hx(5), hx(4)]); ctx.strokeRect(-b.hw, -b.hh, b.hw*2, b.hh*2); ctx.restore();
       if(fen && S.msub === "fenetre") drawBox(ctx, fenetreBox(p, f, o), false, false); else drawBox(ctx, b, true, false);
+      // qui est qui : la photo du dessus porte une étiquette jaune à son coin, la photo du dessous une étiquette sombre en bas
+      const q = photoOf(p, f.src), cr = Math.cos(b.rot), sr = Math.sin(b.rot);
+      tagOn(ctx, b.cx - b.hw*cr + b.hh*sr + hx(6), b.cy - b.hw*sr - b.hh*cr + hx(6), `DESSUS · ${q ? q.name : "photo manquante"}`, "#F9DD10", "#171618", o);
+      tagOn(ctx, hx(6), o.H, `DESSOUS · ${p.name}`, "rgba(23,22,24,.85)", "#fff", o);   // ramenée dans l'image, donc en bas
     }
   }
   $("tagFmt").textContent = `${fmtOf(p.cfg).nom} · ${o.W} x ${o.H}`;
   $("tagMode").textContent = S.tab === "flous" ? "Flous" : S.tab === "calques" ? "Calques" : S.tab === "montage" ? "Montage" : "";
+}
+/* petite étiquette sur l'aperçu (taille à l'écran) ; o : l'étiquette reste dans l'image */
+function tagOn(ctx, x, y, txt, bg, fg, o){
+  const dpr = Math.min(2, window.devicePixelRatio || 1), fs = hx(11*dpr), px = hx(7*dpr), h = fs*1.9;
+  ctx.save(); ctx.font = `700 ${fs}px ${MONT}`; const w = Math.min(ctx.measureText(txt).width, (o ? o.W : 1e9) - 2*hx(12)) + 2*px;
+  if(o){ x = clamp(x, hx(6), o.W - w - hx(6)); y = clamp(y, hx(40*dpr), o.H - h - hx(6)); }   // sous les bandeaux HTML en haut de la scène
+  ctx.setLineDash([]); ctx.shadowColor = "rgba(0,0,0,.4)"; ctx.shadowBlur = hx(3); ctx.fillStyle = bg; rRound(ctx, x, y, w, h, h/2); ctx.fill(); ctx.shadowColor = "transparent";
+  ctx.fillStyle = fg; ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.fillText(txt, x + px, y + h/2, w - 2*px);
+  ctx.restore(); return {w:w, h:h};
 }
 /* grille magnétique : pas carré de W/n, les bords et les axes médians de l'image servent aussi de repères */
 function gridOn(p){ return !!(p.cfg.grille && p.cfg.grille.aimant); }
@@ -1188,7 +1317,11 @@ function snapLayer(p, l, o){
   const bw = l._box.w*k/2, bh = l._box.h*k/2, hw = bw*c + bh*s, hh = bw*s + bh*c, st = gridStep(p, o);
   l.x = snapAxis(l.x*o.W, hw, st, o.W)/o.W; l.y = snapAxis(l.y*o.H, hh, st, o.H)/o.H;
 }
-function hasWid(l){ return ["texte", "carte", "montagne", "biais", "cercle"].indexOf(l.type) >= 0; }
+/* poignées blanches : largeur (bord droit) et hauteur (bord bas) pour tous les textes et formes ; pas pour le logo ni le coin */
+function hasWid(l){ return l.type !== "logo" && l.type !== "coin"; }
+function hasHgt(l){ return hasWid(l); }
+const AR_T = ["carte", "montagne", "biais", "cercle", "zoom", "fleche"], HR_T = ["carte", "zoom"];   // largeur et hauteur propres (sans déformation du contenu)
+function defAr(l){ return l.type === "cercle" ? 1.3 : 1; }
 function drawCropView(p){
   const sw = srcW(p), sh = srcH(p); layoutCanvas(sw, sh);
   const ctx = cx2; ctx.setTransform(V.k, 0, 0, V.k, 0, 0); V.space = "src";
@@ -1218,7 +1351,12 @@ function curObj(p){
   if(S.tab === "cadre"){ if(!fmtOf(p.cfg).w || isBandes(p)) return null; const c = cropRect(p); return {kind:"cadre", ref:p.cfg.cadre, cx:c.x + c.w/2, cy:c.y + c.h/2, hw:c.w/2, hh:c.h/2, rot:0}; }
   const o = outSize(p);
   if(S.tab === "flous"){ const z = (p.cfg.flous || []).find(x => x.id === S.fsel); if(!z) return null; const r = zoneOut(z, p, o.W, o.H); return {kind:"flou", ref:z, cx:r.x, cy:r.y, hw:r.w/2, hh:r.h/2, rot:(z.angle || 0)*Math.PI/180}; }
-  if(S.tab === "calques"){ const l = p.cfg.calques.find(x => x.id === S.csel); if(!l || !l._box) return null; return {kind:"calque", ref:l, cx:l.x*o.W, cy:l.y*o.H, hw:l._box.w/2, hh:l._box.h/2, rot:(l.rot || 0)*Math.PI/180, wid:hasWid(l), norot:l.type === "coin"}; }
+  if(S.tab === "calques"){
+    const l = p.cfg.calques.find(x => x.id === S.csel); if(!l || !l._box) return null;
+    if(l.type === "zoom" && S.lsub === "zone" && !l.src) return Object.assign(zoneBox(p, l, o), {kind:"lzone", ref:l, norot:true});
+    if(l.type === "zoom" && S.lsub === "contenu" && l.src) return {kind:"lcontenu", ref:l, cx:l.x*o.W, cy:l.y*o.H, hw:l._box.w/2, hh:l._box.h/2, rot:(l.rot || 0)*Math.PI/180, nohand:true, norot:true};
+    return {kind:"calque", ref:l, cx:l.x*o.W, cy:l.y*o.H, hw:l._box.w/2, hh:l._box.h/2, rot:(l.rot || 0)*Math.PI/180, wid:hasWid(l), hgt:hasHgt(l), norot:l.type === "coin"};
+  }
   if(S.tab === "montage"){
     const m = p.cfg.montage;
     if(m.mode === "bandes" && m.bandes.length){ const i = clamp(S.msel, 0, m.bandes.length - 1), r = paneRects(m, m.bandes.length, o.W, o.H)[i]; return {kind:"bande", ref:m.bandes[i], cx:r.x + r.w/2, cy:r.y + r.h/2, hw:r.w/2, hh:r.h/2, rot:0, nohand:true, norot:true}; }
@@ -1234,7 +1372,10 @@ function handleAt(b, q, withRot){
   const r = handleR()*1.6, c = Math.cos(b.rot), s = Math.sin(b.rot);
   const corners = b.kind === "cadre" ? [[-b.hw, -b.hh], [b.hw, -b.hh], [-b.hw, b.hh], [b.hw, b.hh]] : [[b.hw, b.hh]];
   for(const k of corners){ const x = b.cx + k[0]*c - k[1]*s, y = b.cy + k[0]*s + k[1]*c; if(Math.hypot(q.x - x, q.y - y) <= r) return {h:"scale", cx:k[0], cy:k[1]}; }
-  if(b.wid && Math.hypot(q.x - (b.cx + b.hw*c), q.y - (b.cy + b.hw*s)) <= r) return {h:"wid"};
+  // poignées de largeur et de hauteur : sur un petit objet (téléphone), un toucher près du centre reste un déplacement
+  const dc = Math.hypot(q.x - b.cx, q.y - b.cy), dw = Math.hypot(q.x - (b.cx + b.hw*c), q.y - (b.cy + b.hw*s)), dh = Math.hypot(q.x - (b.cx - b.hh*s), q.y - (b.cy + b.hh*c));
+  if(b.wid && dw <= r && dw < dc) return {h:"wid"};
+  if(b.hgt && dh <= r && dh < dc) return {h:"hgt"};
   if(withRot){ const ry = -b.hh - handleR()*2.4, x = b.cx - ry*s, y = b.cy + ry*c; if(Math.hypot(q.x - x, q.y - y) <= r) return {h:"rot"}; }
   return null;
 }
@@ -1275,6 +1416,17 @@ function applyGesture(p, b, o0, dx, dy, f, da){
   } else if(b.kind === "fusion"){
     const l = b.ref;
     l.x = clamp(o0.x + dx/o.W, -0.5, 1.5); l.y = clamp(o0.y + dy/o.H, -0.5, 1.5); l.s = clamp(o0.s*f, 0.1, 8); l.rot = clamp(Math.round((o0.rot + da*180/Math.PI)*10)/10, -180, 180);
+  } else if(b.kind === "lzone"){
+    // l'anneau de la zone grossie se déplace sur la photo, pincer change la taille de la zone (donc le grossissement)
+    const l = b.ref, z = l.zone, z0 = o0.zone, cd = cropRef(p);
+    z.x = z0.x + dx/o.W*cd.w; z.y = z0.y + dy/o.H*cd.h; z.w = z0.w*f;
+    fitZone(p, l, zoomDims(p, l, p), o.W/1080);
+  } else if(b.kind === "lcontenu"){
+    // la photo incrustée suit le doigt dans la loupe (la zone va dans l'autre sens) ; pincer zoome dedans
+    const l = b.ref, q = zoomSrc(p, l); if(!q) return;
+    const z = l.zone, z0 = o0.zone, dims = zoomDims(p, l, q), k = zoneRatio(dims, l, o.W/1080), c = Math.cos(b.rot), s = Math.sin(b.rot), lx = dx*c + dy*s, ly = -dx*s + dy*c;
+    z.w = z0.w/f; z.x = z0.x - lx/(b.hw*2)*z.w; z.y = z0.y - ly/(b.hh*2)*z.w*k;
+    fitZone(p, l, dims, o.W/1080);
   } else if(b.kind === "fenetre"){
     // la fenêtre se déplace dans le repère (tourné) de la photo superposée
     const w = b.ref.fenetre, w0 = o0.fenetre, c = Math.cos(b.rot), s = Math.sin(b.rot), lx = dx*c + dy*s, ly = -dx*s + dy*c;
@@ -1291,7 +1443,13 @@ function applyGesture(p, b, o0, dx, dy, f, da){
 /* poignée de largeur : f = nouvelle demi-largeur / demi-largeur au départ */
 function applyWidth(l, o0, f){
   if(l.type === "texte") l.larg = clamp((o0.larg || 0.8)*f, 0.1, 1.5);
-  else l.ar = clamp((o0.ar || 1)*f, 0.3, 3);
+  else if(AR_T.indexOf(l.type) >= 0) l.ar = clamp((o0.ar || defAr(l))*f, 0.3, 3);
+  else l.ex = clamp((o0.ex || 1)*f, 0.2, 5);
+}
+/* poignée de hauteur : f = nouvelle demi-hauteur / demi-hauteur au départ */
+function applyHeight(l, o0, f){
+  if(HR_T.indexOf(l.type) >= 0) l.hr = clamp((o0.hr || 1)*f, 0.3, 3);
+  else l.ey = clamp((o0.ey || 1)*f, 0.2, 5);
 }
 cv.addEventListener("pointerdown", e => {
   const p = selected(); if(!p) return;
@@ -1312,7 +1470,7 @@ cv.addEventListener("pointerdown", e => {
     // l'objet déjà choisi garde la main s'il est sous le doigt ; sinon on prend celui qui s'y trouve
     if(!(b && inBox(b, q, hx(8)))){
       const id = pick(p, q);
-      if(id){ if(S.tab === "flous") S.fsel = id; else if(S.tab === "montage") S.msel = +id; else S.csel = id; picked = true; renderPanel(); draw(); b = curObj(p); }
+      if(id){ if(S.tab === "flous") S.fsel = id; else if(S.tab === "montage") S.msel = +id; else { S.csel = id; S.lsub = "calque"; } picked = true; renderPanel(); draw(); b = curObj(p); }
       else { if(S.tab === "calques" && S.csel){ S.csel = null; renderPanel(); draw(); } return; }
     }
   } else if(b && !inBox(b, q, hx(20))){ return; }
@@ -1336,6 +1494,9 @@ cv.addEventListener("pointermove", e => {
   } else if(a.kind === "wid"){
     const c = Math.cos(a.b.rot), s = Math.sin(a.b.rot), lx = (q.x - a.b.cx)*c + (q.y - a.b.cy)*s;
     applyWidth(a.b.ref, a.o0, Math.max(0.05, Math.abs(lx)/Math.max(1, a.b.hw)));
+  } else if(a.kind === "hgt"){
+    const c = Math.cos(a.b.rot), s = Math.sin(a.b.rot), ly = -(q.x - a.b.cx)*s + (q.y - a.b.cy)*c;
+    applyHeight(a.b.ref, a.o0, Math.max(0.05, Math.abs(ly)/Math.max(1, a.b.hh)));
   } else if(a.kind === "scale"){
     applyGesture(p, a.b, a.o0, 0, 0, Math.hypot(q.x - a.b.cx, q.y - a.b.cy)/a.d0, 0);
   } else if(a.kind === "rot"){
@@ -1385,9 +1546,26 @@ function delZone(p){ p.cfg.flous = (p.cfg.flous || []).filter(z => z.id !== S.fs
 function delLayer(p){ p.cfg.calques = p.cfg.calques.filter(l => l.id !== S.csel); S.csel = null; persist(p); renderPanel(); draw(); }
 
 /* ---------- pellicule et sélection ---------- */
+/* photos qui composent l'image de p, avec leur rôle (dessous, dessus, bande n, loupe) ; p en tête (rôle "" si seule) */
+function composition(p){
+  const out = [{q:p, role:""}], m = p.cfg.montage || {};
+  const add = (q, role) => { if(!q) return; const e = out.find(x => x.q === q); if(!e) out.push({q:q, role:role}); else if(!e.role) e.role = role; else e.role = /^Bande/.test(e.role) && /^Bande/.test(role) ? `${e.role}+${role.slice(6)}` : `${e.role}, ${role.toLowerCase()}`; };
+  if(m.mode === "fusion" && m.fusion){ out[0].role = "Dessous"; add(photoOf(p, m.fusion.src), "Dessus"); }
+  else if(m.mode === "bandes") m.bandes.forEach((b, i) => add(photoOf(p, b.src), `Bande ${i + 1}`));
+  p.cfg.calques.forEach(l => { if(l.type === "zoom" && l.src){ const q = photoOf(p, l.src); if(q && q !== p) add(q, "Loupe"); } });
+  return out;
+}
+/* rôle de chaque photo dans la composition de la photo choisie, pour la pellicule */
+function filmRoles(){
+  const p = selected(), roles = {}; if(!p) return roles;
+  composition(p).forEach(x => { if(x.role) roles[x.q.id] = x.role; });
+  return roles;
+}
+/* photo dont l'onglet Couleur règle les couleurs : une des photos de la composition (S.csrc), sinon la photo elle-même */
+function colorTarget(p){ return (S.csrc && composition(p).find(x => x.q.id === S.csrc) || {q:p}).q; }
 function renderFilm(){
-  const f = $("film");
-  f.innerHTML = S.photos.map(p => `<button type="button" class="th" data-sel="${p.id}" aria-pressed="${p.id === S.sel}" title="${esc(p.name)}"><img src="${p.thumb}" alt="">${p.modified ? '<span class="dot" title="Modifiée"></span>' : ''}${p.exported ? '<span class="ok" title="Exportée"></span>' : ''}</button>`).join("")
+  const f = $("film"), roles = filmRoles();
+  f.innerHTML = S.photos.map(p => `<button type="button" class="th" data-sel="${p.id}" aria-pressed="${p.id === S.sel}" title="${esc(p.name)}${roles[p.id] ? ` (${esc(roles[p.id])})` : ""}"><img src="${p.thumb}" alt="">${p.modified ? '<span class="dot" title="Modifiée"></span>' : ''}${p.exported ? '<span class="ok" title="Exportée"></span>' : ''}${roles[p.id] ? `<span class="role">${esc(roles[p.id])}</span>` : ''}</button>`).join("")
     + (S.videos || []).map(v => `<button type="button" class="th vid" data-vid="${v.id}" title="${esc(v.name)} : extraire des images">${v.thumb ? `<img src="${v.thumb}" alt="">` : ""}<span class="play">${v.err ? "!" : "&#9654;"}</span>${v.n ? `<span class="n">${v.n}</span>` : ""}</button>`).join("")
     + `<button type="button" class="th add" data-add="1" aria-label="Ajouter des photos ou vidéos">+</button>`;
 }
@@ -1398,18 +1576,18 @@ $("film").addEventListener("click", e => {
   if(b.dataset.sel) select(b.dataset.sel);
 });
 function select(id){
-  S.sel = id; S.fsel = null; S.csel = null; S.msel = 0; S.msub = "calque";
+  S.sel = id; S.fsel = null; S.csel = null; S.lsub = "calque"; S.csrc = null; S.msel = 0; S.msub = "calque"; S.mview = "deux";
   const p = selected(); if(!p) return;
   $("pname").textContent = `${p.path}  ·  ${p.w} x ${p.h}`;
   renderFilm(); renderPanel(); draw();
   const th = $("film").querySelector(`[data-sel="${id}"]`); if(th && th.scrollIntoView) th.scrollIntoView({block:"nearest", inline:"nearest"});
 }
-$("tabs").addEventListener("click", e => {
-  const b = e.target.closest(".tab"); if(!b) return;
-  S.tab = b.dataset.tab;
-  Array.prototype.forEach.call($("tabs").children, t => t.setAttribute("aria-selected", t === b));
+function goTab(name){
+  S.tab = name;
+  Array.prototype.forEach.call($("tabs").children, t => t.setAttribute("aria-selected", t.dataset.tab === name));
   renderPanel(); draw();
-});
+}
+$("tabs").addEventListener("click", e => { const b = e.target.closest(".tab"); if(b) goTab(b.dataset.tab); });
 
 /* ---------- panneaux ----------
    renderPanel() reconstruit le panneau de l'onglet courant ; les gestionnaires sont posés une fois sur #panel
@@ -1441,7 +1619,8 @@ function renderPanel(){
   } else if(S.tab === "montage"){
     fixMontage(p);
     const m = c.montage;
-    h += `<div class="grp"><span class="lbl">Composition</span>${chips(MODES_MONTAGE, m.mode, "mmode")}<p class="hint">${m.mode === "bandes" ? "Plusieurs photos sur une même image (vue large, zoom, infrarouge), en bandes côte à côte ou empilées." : m.mode === "fusion" ? "Une photo (l'infrarouge) posée en transparence sur celle-ci et alignée dessus : une sorte de réalité augmentée." : "Combinez cette photo avec d'autres photos chargées : bandeaux côte à côte ou superposition infrarouge."}</p></div>`;
+    const fq = m.mode === "fusion" && m.fusion ? photoOf(p, m.fusion.src) : null;
+    h += `<div class="grp"><span class="lbl">Composition</span>${chips(MODES_MONTAGE, m.mode, "mmode")}<p class="hint">${m.mode === "bandes" ? "Plusieurs photos sur une même image (vue large, zoom, infrarouge), en bandes côte à côte ou empilées." : m.mode === "fusion" ? `Une photo (l'infrarouge${fq ? `, ici ${esc(fq.name)}` : ""}) posée en transparence sur ${esc(p.name)} et alignée dessus : une sorte de réalité augmentée. Pour un zoom incrusté dans un coin, voir plutôt l'onglet Calques.` : "Combinez cette photo avec d'autres photos chargées : bandeaux côte à côte ou superposition infrarouge. Pour incruster une loupe ou la photo zoom dans un coin, utilisez le calque « Zoom incrusté » de l'onglet Calques."}</p></div>`;
     if(m.mode === "bandes"){
       const i = clamp(S.msel, 0, m.bandes.length - 1), b = m.bandes[i], q = photoOf(p, b.src), o = outSize(p), rect = paneRects(m, m.bandes.length, o.W, o.H)[i];
       h += `<div class="grp"><span class="lbl">Disposition</span>${chips([["v","Côte à côte"],["h","Empilées"]], m.sens, "msens")}</div>`;
@@ -1449,12 +1628,17 @@ function renderPanel(){
       h += `<div class="sub"><div class="lbl">Bande ${i + 1}</div><div class="grp"><span class="lbl">Photo</span>${photoChips(p, q, "mpick")}</div>`;
       h += `<div class="grp"><span class="lbl">Étiquette</span><input class="field" data-metq="1" value="${esc(b.etiquette)}" maxlength="40" placeholder="Ex. : Vue large, Zoom, Infrarouge"></div>`;
       if(q && b.cadre){ const mx = maxCadreFor(srcW(q), srcH(q), rect.ratio); h += range("Zoom", "mzoom", Math.round(b.cadre.w/mx.w*100), 10, 100, " %"); }
-      h += `<div class="actions"><button type="button" class="btn small ghost" data-act="mcenter">Centrer</button><button type="button" class="btn small ghost" data-act="mmax">Cadre maximal</button>${m.bandes.length > 2 ? `<button type="button" class="btn small ghost danger" data-act="mdel">Retirer cette bande</button>` : ""}</div>`;
+      h += `<div class="actions"><button type="button" class="btn small ghost" data-act="mcenter">Centrer</button><button type="button" class="btn small ghost" data-act="mmax">Cadre maximal</button>${q ? `<button type="button" class="btn small ghost" data-ctab="${q.id}">Couleurs de cette photo</button>` : ""}${m.bandes.length > 2 ? `<button type="button" class="btn small ghost danger" data-act="mdel">Retirer cette bande</button>` : ""}</div>`;
       h += `<p class="hint">Sur l'image : touchez une bande pour la choisir, glissez la photo dans sa bande pour la cadrer, pincez ou molette pour zoomer. Les couleurs de chaque bande sont celles réglées sur sa photo.</p></div>`;
       h += range("Séparateur", "msep", m.sep, 0, 40) + `<div class="grp"><span class="lbl">Couleur du séparateur</span>${swatches(m.sepCouleur, "msepc")}</div>`;
     } else if(m.mode === "fusion" && m.fusion){
       const f = m.fusion, q = photoOf(p, f.src), w = f.fenetre;
-      h += `<div class="grp"><span class="lbl">Photo superposée</span>${photoChips(p, q, "mfsrc", true)}</div>`;
+      h += `<div class="grp"><span class="lbl">Qui est sur qui</span><div class="pair">`
+        + `<div class="slot"><img src="${p.thumb}" alt=""><div><b>Dessous</b><span>${esc(p.name)}</span><small>la photo choisie dans la pellicule</small></div></div>`
+        + `<div class="slot dessus"><img src="${q ? q.thumb : ""}" alt=""><div><b>Dessus</b><span>${q ? esc(q.name) : `<span class="miss">${esc(f.src || "aucune photo")}</span>`}</span><small>posée en transparence, à aligner</small></div></div></div>`
+        + (q && q !== p ? `<div class="actions" style="margin-top:8px"><button type="button" class="btn small ghost" data-act="mswap">Inverser : ${esc(q.name)} dessous</button><button type="button" class="btn small ghost" data-ctab="${q.id}">Couleurs du dessus</button><button type="button" class="btn small ghost" data-ctab="${p.id}">Couleurs du dessous</button></div>` : "") + `</div>`;
+      h += `<div class="grp"><span class="lbl">Photo du dessus</span>${photoChips(p, q, "mfsrc", true)}</div>`;
+      h += `<div class="grp"><span class="lbl">Voir sur l'aperçu</span>${chips([["deux","Les deux"],["dessous","Le dessous seul"],["dessus","Le dessus seul"]], S.mview, "mview")}<p class="hint">Pour vérifier qui est qui et l'alignement ; l'export contient toujours les deux.</p></div>`;
       h += `<div class="grp"><span class="lbl">Mode</span>${chips(FUSIONS, f.mode, "mblend")}<p class="hint">Fondu : transparence simple. Éclaircir : seules les parties plus claires que la photo ressortent (points chauds en blanc). Lumière : ajoute la lumière de l'infrarouge. Chaleur : seules les zones plus claires que le seuil restent visibles.</p></div>`;
       if(f.mode === "chaleur") h += range("Seuil de chaleur", "mseuil", f.seuil, 0, 100, " %");
       h += range("Opacité", "mop", f.op, 0, 100, " %") + range("Taille", "ms", Math.round(f.s*100), 10, 800, " %") + range("Rotation", "mrot", f.rot, -180, 180, "°", 0.5);
@@ -1467,14 +1651,18 @@ function renderPanel(){
         h += `<div class="grp"><span class="lbl">Contour</span><div class="chips"><button type="button" class="chip" data-mcont="aucun" aria-pressed="${!w.contour}">Aucun</button>${COULEURS.map(x => `<button type="button" class="sw" style="background:${x[0]}" data-mcont="${x[0]}" aria-pressed="${x[0] === w.contour}" title="${x[1]}" aria-label="${x[1]}"></button>`).join("")}</div></div>`;
       }
       h += `<p class="hint">La fenêtre suit la photo superposée : elle ne garde que la zone utile (l'animal, le point chaud).</p></div>`;
-      h += `<p class="hint">Sur l'image : glissez la photo superposée, pincez ou tirez la poignée jaune pour sa taille, la bleue pour l'orienter, jusqu'à retrouver le même cadrage que la photo du dessous (baissez l'opacité pour voir les deux). Molette : taille.</p>`;
-    } else if(S.photos.length < 2) h += `<p class="hint">Chargez aussi les autres vues du même moment (zoom, infrarouge) avec le bouton « + » de la pellicule, puis choisissez une composition.</p>`;
+      h += `<p class="hint">Sur l'image : glissez la photo du dessus (cadre en pointillés, étiquette jaune), pincez ou tirez la poignée jaune pour sa taille, la bleue pour l'orienter, jusqu'à retrouver le même cadrage que la photo du dessous (baissez l'opacité pour voir les deux). Molette : taille.</p>`;
+    } else if(S.photos.length < 2) h += `<p class="hint">Chargez aussi les autres vues du même moment (zoom, infrarouge) avec le bouton « + » de la pellicule, puis choisissez une composition. La photo choisie dans la pellicule est toujours la photo de base (celle du dessous).</p>`;
   } else if(S.tab === "couleur"){
-    const u = c.couleur;
-    h += `<div class="grp"><span class="lbl">Filtre</span>${chips(FILTRES.map(x => [x.id, x.nom]), c.filtre, "filtre")}</div>`;
+    const comp = composition(p), q = colorTarget(p), cq = q.cfg, u = cq.couleur;
+    if(comp.length > 1){
+      h += `<div class="grp"><span class="lbl">Image à régler</span><div class="chips">${comp.map(x => `<button type="button" class="chip pic" data-ctarget="${x.q.id}" aria-pressed="${x.q === q}"><img src="${x.q.thumb}" alt=""><span>${esc(x.role ? `${x.role} · ` : "")}${esc(x.q.name)}</span></button>`).join("")}</div>`;
+      h += `<p class="hint">${q === p ? "Les couleurs de la photo de base. Les autres photos du montage gardent leurs propres couleurs : choisissez-en une pour la régler en voyant le résultat dans le montage." : `Vous réglez les couleurs de ${esc(q.name)} telles qu'elles apparaissent dans ce montage (et partout où cette photo est utilisée : elles sont enregistrées dans sa fiche).`}</p></div>`;
+    }
+    h += `<div class="grp"><span class="lbl">Filtre</span>${chips(FILTRES.map(x => [x.id, x.nom]), cq.filtre, "filtre")}</div>`;
     h += range("Luminosité", "col=\"lum\"", u.lum, -100, 100) + range("Contraste", "col=\"contraste\"", u.contraste, -100, 100) + range("Saturation", "col=\"sat\"", u.sat, -100, 100)
       + range("Température (froid à chaud)", "col=\"temp\"", u.temp, -100, 100) + range("Vignettage", "col=\"vignette\"", u.vignette, 0, 100);
-    h += `<div class="actions"><button type="button" class="btn small ghost" data-act="colReset">Réinitialiser</button><button type="button" class="btn small ghost" data-act="colAll"${S.photos.length > 1 ? "" : " disabled"}>Appliquer à toutes les photos</button></div>`;
+    h += `<div class="actions"><button type="button" class="btn small ghost" data-act="colReset">Réinitialiser</button><button type="button" class="btn small ghost" data-act="colAll"${S.photos.length > 1 ? "" : " disabled"}>Appliquer à toutes les photos</button>${q !== p ? `<button type="button" class="btn small ghost" data-act="colSame">Mêmes réglages que la photo de base</button>` : ""}</div>`;
   } else if(S.tab === "flous"){
     const zs = c.flous || [], z = zs.find(x => x.id === S.fsel);
     h += `<div class="grp"><span class="lbl">Zones floutées (visages, plaques, lieux)</span><div class="chips">${zs.map((x, i) => `<button type="button" class="chip" data-fsel="${x.id}" aria-pressed="${x === z}">Flou ${i + 1}</button>`).join("")}<button type="button" class="chip add" data-act="addZone">+ Ajouter une zone</button></div>`;
@@ -1496,12 +1684,13 @@ function renderPanel(){
     h += `<div class="grp"><span class="lbl">Grille magnétique</span>${chips([["0","Désactivée"],["6","Large"],["12","Moyenne"],["24","Fine"]], g.aimant ? String(g.n) : "0", "grille")}<p class="hint">Les bords et le centre des éléments s'alignent sur la grille, les bords et le milieu de l'image ; les angles ronds (tous les 15°) sont aimantés. Flèches du clavier : une case par appui.</p></div>`;
     if(ls.length){
       h += `<ul class="list">${ls.map((x, i) => `<li aria-selected="${x === l}"><button type="button" class="sel" data-csel="${x.id}">${esc(layerName(x))}</button><button type="button" class="ib" data-lup="${x.id}" aria-label="Dessous"${i ? "" : " disabled"}><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button><button type="button" class="ib" data-ldown="${x.id}" aria-label="Dessus"${i < ls.length - 1 ? "" : " disabled"}><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/></svg></button><button type="button" class="ib" data-ldel="${x.id}" aria-label="Supprimer"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></li>`).join("")}</ul>`;
-      h += `<p class="hint">Sur l'image : touchez un élément pour le choisir (deux fois pour écrire son texte), glissez pour le déplacer, pincez ou tirez la poignée jaune pour la taille, la blanche pour la largeur, la bleue pour l'orienter. L'ordre de la liste est l'ordre de dessin (le dernier est au-dessus).</p>`;
+      h += `<p class="hint">Sur l'image : touchez un élément pour le choisir (deux fois pour écrire son texte), glissez pour le déplacer, pincez ou tirez la poignée jaune pour la taille, les blanches pour la largeur (bord droit) et la hauteur (bord bas), la bleue pour l'orienter. L'ordre de la liste est l'ordre de dessin (le dernier est au-dessus).</p>`;
     } else h += `<p class="hint">Aucun élément pour l'instant : ajoutez le logo, un titre, un texte, une légende, une flèche, un cercle ou des éléments de cadre.</p>`;
   } else if(S.tab === "export"){
     const o = outSize(p), f = fmtOf(c), name = outName(p);
     h += `<div class="card"><div class="kv">Photo : <b>${esc(p.path)}</b></div><div class="kv">Format : <b>${esc(f.nom)}</b> (${esc(f.res)}), <b>${o.W} x ${o.H}</b> px, JPEG</div><div class="kv">Fichier exporté : <b>${esc(name)}</b></div>`;
-    if(isMontage(p)){ const m = c.montage, fq = m.fusion ? photoOf(p, m.fusion.src) : null; h += `<div class="kv">Montage : <b>${m.mode === "bandes" ? `${m.bandes.length} bandeaux ${m.sens === "h" ? "empilés" : "côte à côte"}` : `superposition de ${esc(fq ? fq.name : (m.fusion && m.fusion.src) || "photo manquante")}`}</b></div>`; }
+    if(isMontage(p)){ const m = c.montage, fq = m.fusion ? photoOf(p, m.fusion.src) : null; h += `<div class="kv">Montage : <b>${m.mode === "bandes" ? `${m.bandes.length} bandeaux ${m.sens === "h" ? "empilés" : "côte à côte"}` : `superposition de ${esc(fq ? fq.name : (m.fusion && m.fusion.src) || "photo manquante")} (dessus) sur ${esc(p.name)} (dessous)`}</b></div>`; }
+    const loupes = c.calques.filter(l => l.type === "zoom"); if(loupes.length) h += `<div class="kv">Zoom incrusté : <b>${loupes.map(l => l.src ? esc(l.src) : "une zone de la photo").join(", ")}</b></div>`;
     if(S.dirWritable) h += `<div class="kv">Dossier de travail : les exports vont dans <b>publication/</b>, la fiche est enregistrée à côté de la photo ${p.ficheOk ? "(à jour)" : ""}.</div>`;
     h += `</div>`;
     const m = c.meta || readMeta(null);
@@ -1520,14 +1709,13 @@ function layerEditor(l){
   let h = `<div class="sub" id="leditor"><div class="row"><div class="lbl">${esc(TYPES[l.type])}</div><button type="button" class="btn small ghost" data-act="ldone" style="flex:none">Terminé</button></div>`;
   if(l.type === "titre" || l.type === "texte" || l.type === "carte"){
     h += `<div class="grp"><textarea class="field" data-ltext="1" rows="2" aria-label="Texte" placeholder="${l.type === "titre" ? "Ex. : Chien secouru en Belledonne" : l.type === "carte" ? "Ex. : Drone" : "Ex. : 3 h de marche, 1 200 m de dénivelé"}">${esc(l.texte || "")}</textarea>`;
-    h += `<p class="hint">${l.type === "titre" ? "Le titre ne revient à la ligne que là où vous appuyez sur Entrée : sa taille se règle seule, avec la poignée jaune ou le curseur Taille." : l.type === "texte" ? "Le texte revient à la ligne dans la largeur de la zone (poignée blanche ou curseur), indépendamment de sa taille." : "Le texte revient à la ligne dans la carte ; la poignée blanche règle sa largeur."}</p></div>`;
+    h += `<p class="hint">${l.type === "titre" ? "Le titre ne revient à la ligne que là où vous appuyez sur Entrée : sa taille se règle avec la poignée jaune ou le curseur Taille, les poignées blanches l'étirent en largeur ou en hauteur." : l.type === "texte" ? "Le texte revient à la ligne dans la largeur de la zone (poignée blanche du bord droit ou curseur), indépendamment de sa taille ; la poignée du bas l'étire en hauteur." : "Le texte revient à la ligne dans la carte ; les poignées blanches règlent sa largeur et sa hauteur."}</p></div>`;
   }
   if(l.type === "signature") h += `<div class="grp"><input class="field" data-ltext="1" aria-label="Texte de la signature" value="${esc(l.texte || "")}"></div>`;
   if(l.type === "logo") h += `<div class="grp"><span class="lbl">Présentation</span>${chips([["cartouche","Cartouche ESAM"],["logo","Logo seul"]], l.mode, "lmode")}</div>`;
   if(l.type === "titre" || l.type === "texte"){
     h += `<div class="grp"><span class="lbl">Couleur</span>${swatches(l.couleur, "lcol")}</div>`;
     h += `<div class="grp"><span class="lbl">Fond</span>${chips([["ombre","Ombre"],["contour","Contour"],["bande","Bande"],["boite","Boîte"],["aucun","Aucun"]], l.fond, "lfond")}</div>`;
-    if(l.type === "texte") h += range("Largeur de la zone", "llarg", Math.round((l.larg || 0.8)*100), 10, 150, " %");
   }
   if(l.type === "legende"){
     h += `<div class="grp"><span class="lbl">Nom de l'animal</span><input class="field" data-lfield="animal" value="${esc(l.animal || "")}" placeholder="Ex. : Rex, chien de berger"></div>`;
@@ -1538,12 +1726,30 @@ function layerEditor(l){
   if(l.type === "fleche" || l.type === "cercle"){
     h += `<div class="grp"><span class="lbl">Couleur</span>${swatches(l.couleur, "lcol")}</div>`;
     h += `<div class="grp"><span class="lbl">Trait</span>${chips([["1","Fin"],["2","Moyen"],["3","Épais"]], String(l.epais || 2), "lepais")}</div>`;
-    if(l.type === "cercle") h += range("Largeur du cercle", "lar", Math.round((l.ar || 1.3)*100), 30, 300, " %");
+  }
+  if(l.type === "zoom"){
+    const p = selected(), q = zoomSrc(p, l), others = S.photos.filter(x => x !== p), o = outSize(p), u = o.W/1080;
+    h += `<div class="grp"><span class="lbl">Contenu de la loupe</span><div class="chips"><button type="button" class="chip pic" data-lsrc="self" aria-pressed="${!l.src}"><img src="${p.thumb}" alt=""><span>Une zone de cette photo</span></button>${others.map(x => `<button type="button" class="chip pic" data-lsrc="${x.id}" aria-pressed="${x === q && !!l.src}"><img src="${x.thumb}" alt=""><span>${esc(x.name)}</span></button>`).join("")}</div>`;
+    h += `<p class="hint">${l.src ? (q ? `La photo ${esc(q.name)} (caméra zoom, thermique) est incrustée dans la loupe.` : `<span class="miss">Photo ${esc(l.src)} non chargée.</span>`) : "La loupe grossit la zone repérée par l'anneau sur la photo."}${others.length ? "" : " Pour incruster la photo de la caméra zoom ou thermique, chargez-la avec le bouton « + » de la pellicule."}</p>`;
+    if(l.src && q) h += `<div class="actions"><button type="button" class="btn small ghost" data-ctab="${q.id}">Couleurs de la photo incrustée</button></div>`;
+    h += `</div>`;
+    h += `<div class="grp"><span class="lbl">Régler sur l'image</span>${chips(l.src ? [["calque","La loupe"],["contenu","Le cadrage dans la loupe"]] : [["calque","La loupe"],["zone","La zone grossie"]], S.lsub, "lsub")}`;
+    h += `<p class="hint">${S.lsub === "zone" ? "Glissez l'anneau sur ce qu'il faut grossir, pincez ou tirez la poignée jaune pour sa taille." : S.lsub === "contenu" ? "Glissez la photo dans la loupe pour la cadrer, pincez ou molette pour zoomer." : "Glissez la loupe où elle gêne le moins, pincez ou tirez la poignée jaune pour sa taille."}</p></div>`;
+    if(q){
+      const dims = zoomDims(p, l, q); fitZone(p, l, dims, u);
+      if(l.src) h += range("Zoom dans la loupe", "lzoom", Math.round(l.zone.w/Math.min(1, 1/zoneRatio(dims, l, u))*100), 10, 100, " %");
+      else { const b = loupeSize(u, l), c = cropRef(p); h += range("Grossissement", "lgross", Math.round(b.w*l.s*c.w/(l.zone.w*o.W)*10)/10, 1.5, 8, " x", 0.1); }
+    }
+    h += `<div class="grp"><span class="lbl">Forme</span>${chips([["cercle","Ronde"],["rect","Rectangle"]], l.forme || "cercle", "lforme")}</div>`;
+    h += `<div class="grp"><span class="lbl">Couleur du contour</span>${swatches(l.couleur, "lcol")}</div>`;
+    h += `<div class="grp"><span class="lbl">Contour</span>${chips([["0","Aucun"],["1","Fin"],["2","Moyen"],["3","Épais"]], String(l.epais == null ? 2 : l.epais), "lepais")}</div>`;
+    if(!l.src) h += `<div class="grp"><span class="lbl">Trait entre la zone et la loupe</span>${chips([["1","Oui"],["0","Non"]], l.lien === false ? "0" : "1", "llien")}</div>`;
+    h += `<div class="grp"><span class="lbl">Étiquette dans la loupe</span><input class="field" data-lfield="etiquette" value="${esc(l.etiquette || "")}" maxlength="40" placeholder="Ex. : Zoom, Thermique"></div>`;
   }
   if(l.type === "signature") h += `<div class="grp"><span class="lbl">Couleur du texte</span>${swatches(l.couleur, "lcol")}</div>`;
   if(l.type === "montagne" || l.type === "biais"){
     h += `<div class="grp"><span class="lbl">Couleur</span>${swatches(l.couleur, "lcol")}</div>`;
-    h += range("Largeur", "lar", Math.round((l.ar || 1)*100), 30, 300, " %") + range("Opacité", "lop", Math.round(l.op == null ? 100 : l.op), 10, 100, " %");
+    h += range("Opacité", "lop", Math.round(l.op == null ? 100 : l.op), 10, 100, " %");
     h += `<div class="actions"><button type="button" class="btn small ghost" data-act="lmiroir">Retourner (miroir)</button></div>`;
   }
   if(l.type === "coin"){
@@ -1553,11 +1759,17 @@ function layerEditor(l){
   if(l.type === "carte"){
     h += `<div class="grp"><span class="lbl">Style</span>${chips([["barre","Barre en haut"],["plein","Fond plein"]], l.style || "barre", "lstyle")}</div>`;
     h += `<div class="grp"><span class="lbl">Couleur</span>${swatches(l.couleur, "lcol")}</div>`;
-    h += range("Largeur", "lar", Math.round((l.ar || 1)*100), 30, 300, " %");
   }
+  if(hasWid(l)){
+    if(l.type === "texte") h += range("Largeur de la zone", "llarg", Math.round((l.larg || 0.8)*100), 10, 150, " %");
+    else if(l.type === "fleche") h += range("Longueur", "lar", Math.round((l.ar || 1)*100), 30, 300, " %");
+    else if(AR_T.indexOf(l.type) >= 0) h += range("Largeur", "lar", Math.round((l.ar || defAr(l))*100), 30, 300, " %");
+    else h += range("Largeur (étirement)", "lex", Math.round((l.ex || 1)*100), 20, 500, " %");
+  }
+  if(hasHgt(l)) h += HR_T.indexOf(l.type) >= 0 ? range("Hauteur", "lhr", Math.round((l.hr || 1)*100), 30, 300, " %") : range("Hauteur (étirement)", "ley", Math.round((l.ey || 1)*100), 20, 500, " %");
   h += range("Taille", "ls", Math.round(l.s*100), 20, 400, " %");
   if(l.type !== "coin") h += range("Rotation", "lrot", Math.round(l.rot || 0), -180, 180, "°");
-  h += `<div class="actions">${l.type !== "coin" ? `<button type="button" class="btn small ghost" data-act="lcenter">Centrer</button>` : ""}<button type="button" class="btn small ghost" data-act="lreset">Taille et rotation d'origine</button><button type="button" class="btn small ghost danger" data-act="delLayer">Supprimer</button></div></div>`;
+  h += `<div class="actions">${l.type !== "coin" ? `<button type="button" class="btn small ghost" data-act="lcenter">Centrer</button>` : ""}<button type="button" class="btn small ghost" data-act="lreset">Taille, proportions et rotation d'origine</button><button type="button" class="btn small ghost danger" data-act="delLayer">Supprimer</button></div></div>`;
   return h;
 }
 /* rend visible le réglage du calque choisi (sur téléphone, juste sous l'aperçu collant) */
@@ -1586,12 +1798,23 @@ function addZone(p){
   p.cfg.flous = (p.cfg.flous || []).concat([z]); S.fsel = z.id;
   toast("Zone ajoutée au centre : glissez-la sur ce qu'il faut cacher.");
 }
+/* contenu de la loupe : une zone de la photo (q null) ou une autre photo ; la zone repart du centre */
+function setZoomSrc(p, l, q){
+  const auto = !l.etiquette || Object.keys(KIND_LABEL).some(k => KIND_LABEL[k] === l.etiquette);
+  if(q && q !== p){ l.src = srcOf(p, q); l.zone = {x:0.5, y:0.5, w:1}; if(auto) l.etiquette = KIND_LABEL[kindOf(q.name)] || ""; fitZone(p, l, zoomDims(p, l, q), 1); }
+  else { const c = cropRef(p); l.src = null; l.zone = {x:c.x + c.w/2, y:c.y + c.h/2, w:c.w*0.18}; if(auto) l.etiquette = ""; fitZone(p, l, zoomDims(p, l, p), 1); }
+  S.lsub = "calque";
+}
 function addLayer(p, type){
   const l = defLayer(type);
   if(type === "legende"){ const prev = S.photos.map(x => x.cfg.calques.find(y => y.type === "legende")).find(Boolean); if(prev){ l.animal = prev.animal; l.date = prev.date; l.secteur = prev.secteur; } }
   if(type === "fleche" || type === "cercle"){ l.x = 0.5; l.y = 0.5; }
   if(type === "coin"){ const o = outSize(p); placeCoin(l, o.W, o.H); }
-  p.cfg.calques.push(l); S.csel = l.id;
+  if(type === "zoom"){
+    // la photo zoom du même vol (DJI _Z) est incrustée d'office ; sinon la loupe grossit le centre du cadre
+    const q = siblings(p).find(x => kindOf(x.name) === "zoom"); if(q) setZoomSrc(p, l, q); else setZoomSrc(p, l, null);
+  }
+  p.cfg.calques.push(l); S.csel = l.id; S.lsub = "calque";
 }
 $("panel").addEventListener("click", e => {
   const b = e.target.closest("button, label"); if(!b || b.tagName === "LABEL") return;
@@ -1599,7 +1822,9 @@ $("panel").addEventListener("click", e => {
   const d = b.dataset, c = p.cfg;
   let redraw = true;
   if(d.fmt){ c.format = d.fmt; c.cadre = null; fixCadre(p); }
-  else if(d.filtre) c.filtre = d.filtre;
+  else if(d.filtre){ const q = colorTarget(p); q.cfg.filtre = d.filtre; if(q !== p){ q.cache = {}; persist(q); } }
+  else if(d.ctarget){ S.csrc = d.ctarget === p.id ? null : d.ctarget; renderPanel(); draw(); return; }
+  else if(d.ctab){ S.csrc = d.ctab === p.id ? null : d.ctab; goTab("couleur"); return; }
   else if(d.fsel){ S.fsel = d.fsel; }
   else if(d.fmode || d.fforce || d.fforme){ const z = c.flous.find(x => x.id === S.fsel); if(z){ if(d.fmode) z.mode = d.fmode; if(d.fforce) z.force = +d.fforce; if(d.fforme) z.forme = d.fforme; } }
   else if(d.addl){
@@ -1616,6 +1841,7 @@ $("panel").addEventListener("click", e => {
     if(b && q){ const auto = Object.keys(KIND_LABEL).some(k => KIND_LABEL[k] === b.etiquette); b.src = srcOf(p, q); b.cadre = null; if(!b.etiquette || auto) b.etiquette = KIND_LABEL[kindOf(q.name)] || ""; }
   }
   else if(d.mfsrc){ const q = S.photos.find(x => x.id === d.mfsrc); if(c.montage.fusion && q) c.montage.fusion.src = srcOf(p, q); }
+  else if(d.mview){ S.mview = d.mview; renderPanel(); draw(); return; }
   else if(d.mblend || d.mforme || d.msub || d.mfondu || d.mcont){
     const f = c.montage.fusion; if(!f) return;
     if(d.mblend) f.mode = d.mblend;
@@ -1628,7 +1854,9 @@ $("panel").addEventListener("click", e => {
   else if(d.csel){ S.csel = d.csel; }
   else if(d.lup || d.ldown){ const id = d.lup || d.ldown, i = c.calques.findIndex(x => x.id === id), j = d.lup ? i - 1 : i + 1; if(i >= 0 && j >= 0 && j < c.calques.length){ const t = c.calques[i]; c.calques[i] = c.calques[j]; c.calques[j] = t; } }
   else if(d.ldel){ S.csel = d.ldel; delLayer(p); return; }
-  else if(d.lmode || d.lcol || d.lfond || d.lepais || d.lcoin || d.lstyle){ const l = c.calques.find(x => x.id === S.csel); if(l){ if(d.lmode) l.mode = d.lmode; if(d.lcol) l.couleur = d.lcol; if(d.lfond) l.fond = d.lfond; if(d.lepais) l.epais = +d.lepais; if(d.lcoin) l.coin = d.lcoin; if(d.lstyle) l.style = d.lstyle; } }
+  else if(d.lmode || d.lcol || d.lfond || d.lepais || d.lcoin || d.lstyle || d.lforme || d.llien){ const l = c.calques.find(x => x.id === S.csel); if(l){ if(d.lmode) l.mode = d.lmode; if(d.lcol) l.couleur = d.lcol; if(d.lfond) l.fond = d.lfond; if(d.lepais) l.epais = +d.lepais; if(d.lcoin) l.coin = d.lcoin; if(d.lstyle) l.style = d.lstyle; if(d.lforme) l.forme = d.lforme; if(d.llien) l.lien = d.llien === "1"; } }
+  else if(d.lsrc){ const l = c.calques.find(x => x.id === S.csel); if(l && l.type === "zoom") setZoomSrc(p, l, d.lsrc === "self" ? null : S.photos.find(x => x.id === d.lsrc)); }
+  else if(d.lsub){ S.lsub = d.lsub; renderPanel(); draw(); return; }
   else if(d.act){
     const a = d.act, l = c.calques.find(x => x.id === S.csel);
     if(a === "rotL" || a === "rotR"){
@@ -1638,14 +1866,15 @@ $("panel").addEventListener("click", e => {
     }
     else if(a === "center"){ const m = maxCadre(p); c.cadre.x = m.x + (m.w - c.cadre.w)/2; c.cadre.y = m.y + (m.h - c.cadre.h)/2; fixCadre(p); }
     else if(a === "maxc"){ c.cadre = null; fixCadre(p); }
-    else if(a === "colReset"){ c.couleur = newCfg().couleur; c.filtre = "aucun"; }
-    else if(a === "colAll"){ S.photos.forEach(x => { if(x !== p){ x.cfg.couleur = Object.assign({}, c.couleur); x.cfg.filtre = c.filtre; x.cache = {}; persist(x); } }); toast("Couleurs et filtre appliqués à toutes les photos."); }
+    else if(a === "colReset"){ const q = colorTarget(p); q.cfg.couleur = newCfg().couleur; q.cfg.filtre = "aucun"; if(q !== p){ q.cache = {}; persist(q); } }
+    else if(a === "colAll"){ const q = colorTarget(p); S.photos.forEach(x => { if(x !== q){ x.cfg.couleur = Object.assign({}, q.cfg.couleur); x.cfg.filtre = q.cfg.filtre; x.cache = {}; if(x !== p) persist(x); } }); toast("Couleurs et filtre appliqués à toutes les photos."); }
+    else if(a === "colSame"){ const q = colorTarget(p); if(q !== p){ q.cfg.couleur = Object.assign({}, c.couleur); q.cfg.filtre = c.filtre; q.cache = {}; persist(q); } }
     else if(a === "addZone") addZone(p);
     else if(a === "dupZone"){ const z = c.flous.find(x => x.id === S.fsel); if(z){ const n = Object.assign({}, z, {id:uid(), x:clamp(z.x + z.w*0.6, 0, 1)}); c.flous.push(n); S.fsel = n.id; } }
     else if(a === "delZone"){ delZone(p); return; }
     else if(a === "delLayer"){ delLayer(p); return; }
     else if(a === "lcenter" && l){ l.x = 0.5; l.y = 0.5; }
-    else if(a === "lreset" && l){ l.s = 1; l.rot = 0; if(l.type === "texte") l.larg = 0.8; else if(l.ar) l.ar = l.type === "cercle" ? 1.3 : 1; }
+    else if(a === "lreset" && l){ l.s = 1; l.rot = 0; l.ex = 1; l.ey = 1; if(l.type === "texte") l.larg = 0.8; if(l.ar) l.ar = defAr(l); if(l.hr) l.hr = 1; }
     else if(a === "lmiroir" && l){ l.miroir = !l.miroir; }
     else if(a === "ldone"){ S.csel = null; }
     else if(a === "madd"){ const m = c.montage, last = m.bandes[m.bandes.length - 1]; if(m.bandes.length < 4){ m.bandes.push({src:last ? last.src : null, cadre:null, etiquette:""}); S.msel = m.bandes.length - 1; } }
@@ -1653,6 +1882,13 @@ $("panel").addEventListener("click", e => {
     else if(a === "mcenter" || a === "mmax"){ const b = curPane(p); if(b){ if(a === "mmax" || !b.cadre) b.cadre = null; else { const q = photoOf(p, b.src); if(q){ const o = outSize(p), mx = maxCadreFor(srcW(q), srcH(q), paneRects(c.montage, c.montage.bandes.length, o.W, o.H)[clamp(S.msel, 0, c.montage.bandes.length - 1)].ratio); b.cadre.x = mx.x + (mx.w - b.cadre.w)/2; b.cadre.y = mx.y + (mx.h - b.cadre.h)/2; } } } }
     else if(a === "mfcenter" && c.montage.fusion){ c.montage.fusion.x = 0.5; c.montage.fusion.y = 0.5; }
     else if(a === "mfit" && c.montage.fusion){ c.montage.fusion.s = 1; c.montage.fusion.rot = 0; }
+    else if(a === "mswap"){
+      // la photo du dessus devient la photo de base : son montage reprend l'opacité, le mode et la fenêtre ; celle-ci redevient une photo seule
+      const f = c.montage.fusion, q = f && photoOf(p, f.src); if(!q || q === p) return;
+      const nf = Object.assign(newFusion(), {src:srcOf(q, p), op:f.op, mode:f.mode, seuil:f.seuil, fenetre:JSON.parse(JSON.stringify(f.fenetre))});
+      q.cfg.montage.mode = "fusion"; q.cfg.montage.fusion = nf; q.cache = {}; c.montage.mode = "aucun"; p.cache = {};
+      persist(p); persist(q); select(q.id); toast(`${q.name} est maintenant dessous, ${p.name} dessus.`); return;
+    }
     else if(a === "export"){ exportPhoto(p); redraw = false; }
     else if(a === "share"){ sharePhoto(p); redraw = false; }
     else if(a === "fiche"){ download(new Blob([ficheJson(p)], {type:"application/json"}), `${p.name}.esam.json`); redraw = false; }
@@ -1671,7 +1907,7 @@ $("panel").addEventListener("input", e => {
   const d = t.dataset, c = p.cfg, v = +t.value;
   const lbl = t.parentElement && t.parentElement.querySelector(".val");
   if(d.zoom !== undefined){ const m = maxCadre(p), o = c.cadre, w = m.w*v/100, cxp = o.x + o.w/2, cyp = o.y + o.h/2; o.w = w; o.h = w*srcW(p)/srcH(p)/(fmtOf(c).w/fmtOf(c).h); o.x = cxp - o.w/2; o.y = cyp - o.h/2; fixCadre(p); }
-  else if(d.col){ c.couleur[d.col] = v; }
+  else if(d.col){ const q = colorTarget(p); q.cfg.couleur[d.col] = v; if(q !== p){ q.cache = {}; clearTimeout(S.inputT2); S.inputT2 = setTimeout(() => persist(q), 400); } }
   else if(d.meta){
     c.meta = c.meta || readMeta(null); c.meta[d.meta] = clean(t.value).slice(0, 300);
     if(d.meta !== "description") try { localStorage.setItem("esam-picture:meta", JSON.stringify({auteur:c.meta.auteur, droits:c.meta.droits})); } catch(err){}
@@ -1702,8 +1938,18 @@ $("panel").addEventListener("input", e => {
     else if(d.ls !== undefined) l.s = v/100;
     else if(d.lrot !== undefined) l.rot = v;
     else if(d.lar !== undefined) l.ar = v/100;
+    else if(d.lhr !== undefined) l.hr = v/100;
+    else if(d.lex !== undefined) l.ex = v/100;
+    else if(d.ley !== undefined) l.ey = v/100;
     else if(d.llarg !== undefined) l.larg = v/100;
     else if(d.lop !== undefined) l.op = v;
+    else if(d.lgross !== undefined || d.lzoom !== undefined){
+      const q = zoomSrc(p, l), o = outSize(p), u = o.W/1080; if(!q) return;
+      const dims = zoomDims(p, l, q);
+      if(d.lzoom !== undefined) l.zone.w = Math.min(1, 1/zoneRatio(dims, l, u))*v/100;
+      else { const b = loupeSize(u, l), cd = cropRef(p); l.zone.w = b.w*l.s*cd.w/(Math.max(1, v)*o.W); }
+      fitZone(p, l, dims, u);
+    }
     else return;
   }
   if(lbl) lbl.textContent = `${t.value}${d.unit || ""}`;
