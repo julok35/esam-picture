@@ -70,6 +70,7 @@ textarea.field{min-height:64px;resize:vertical}
 .chip[aria-pressed="true"]{background:var(--blue);color:var(--onblue);border-color:var(--onblue)}
 .chip.s[aria-pressed="true"]{background:var(--yellow);color:#171618;border-color:#171618}
 .chip.add{border-style:dashed}
+.chip .pastille{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:7px;vertical-align:-1px;border:1px solid rgba(0,0,0,.25)}
 .chip small{display:block;font-weight:500;font-size:11px;color:inherit;opacity:.8}
 .chip.pic{display:inline-flex;align-items:center;gap:8px;padding:3px 12px 3px 3px}
 .chip.pic img{width:32px;height:32px;border-radius:16px;object-fit:cover;display:block;background:var(--soft)}
@@ -249,7 +250,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 /* Photos ESAM : préparation d'images pour les réseaux sociaux. Un seul fichier, pas de build, ES2017.
    Sections : utils, modèle, formats, chargement, dossier de travail, rendu (base, couleur, flous, calques),
    aperçu et interactions, panneaux, export, démarrage. Voir docs/ARCHITECTURE.md. */
-const APP_VERSION = "0.7";
+const APP_VERSION = "0.8";
 const $ = id => document.getElementById(id);
 
 /* ---------- utils ---------- */
@@ -298,6 +299,7 @@ function wrapLines(ctx, txt, maxW){
    cfg (la fiche de configuration, exportée en JSON) :
      format, cadre {x, y, w, h} en fraction de l'image source, rotation (0/90/180/270),
      couleur {lum, contraste, sat, temp, vignette} de -100 à 100, filtre,
+     selectif {actif, teintes, tolerance, seuil, renfort} : couleurs conservées (tenues jaune fluo, rouge vif), le reste en noir et blanc,
      flous [{id, forme, mode, force, x, y, w, h}] en fraction de l'image source (centre et taille),
      calques [{id, type, x, y, s, rot, ex, ey, ...}] : x, y en fraction de l'image de sortie, s = échelle, rot en degrés,
        ex, ey = étirement horizontal et vertical (poignées blanches) ; les calques à largeur ou hauteur propre (texte larg,
@@ -325,6 +327,8 @@ const FILTRES = [
   {id:"doux", nom:"Doux", p:{contraste:-16, sat:-10, lum:6}},
   {id:"vintage", nom:"Vintage", p:{contraste:-8, sat:-22, temp:18, vignette:45, teinte:"#F9DD10", teinteF:0.08}}
 ];
+/* couleurs conservées (noir et blanc sélectif) : id, nom, teinte centrale (degrés), demi-largeur de base (degrés), pastille */
+const TEINTES = [["jaune","Jaune fluo",64,18,"#D8F000"],["rouge","Rouge vif",2,16,"#E20C0F"],["orange","Orange",28,11,"#F07818"],["vert","Vert",120,35,"#2fa75a"],["bleu","Bleu",220,35,"#2F6FE0"],["rose","Rose et violet",310,30,"#C040C0"]];
 const COULEURS = [["#F9DD10","Jaune ESAM"],["#E20C0F","Rouge"],["#FFFFFF","Blanc"],["#171618","Noir"],["#A8C8FB","Bleu ESAM"],["#2fa75a","Vert"]];
 const MODES_FLOU = [["doux","Doux"],["pixel","Pixelisé"],["dynamique","Dynamique"]];
 const TYPES = {logo:"Logo ESAM", titre:"Titre", texte:"Texte", legende:"Légende", fleche:"Flèche", cercle:"Cercle", zoom:"Zoom incrusté",
@@ -342,8 +346,18 @@ function srcW(p){ return p.cfg.rotation % 180 ? p.h : p.w; }
 function srcH(p){ return p.cfg.rotation % 180 ? p.w : p.h; }
 function newCfg(name){
   return {version:1, app:"esam-picture", fichier:name, format:"carre", cadre:null, rotation:0,
-    couleur:{lum:0, contraste:0, sat:0, temp:0, vignette:0}, filtre:"aucun", flous:[], calques:[], montage:newMontage(), grille:gridPref(), meta:readMeta(metaPref())};
+    couleur:{lum:0, contraste:0, sat:0, temp:0, vignette:0}, filtre:"aucun", selectif:readSelectif(null), flous:[], calques:[], montage:newMontage(), grille:gridPref(), meta:readMeta(metaPref())};
 }
+/* couleurs conservées : lecture tolérante (fiche ancienne : réglage inactif) */
+function readSelectif(x){
+  const o = {actif:!!(x && x.actif), teintes:["jaune", "rouge"], tolerance:50, seuil:35, renfort:20};
+  if(x && Array.isArray(x.teintes)) o.teintes = TEINTES.map(t => t[0]).filter(id => x.teintes.indexOf(id) >= 0);
+  ["tolerance", "seuil", "renfort"].forEach(k => { if(x && x[k] != null) o[k] = clamp(Math.round(+x[k]) || 0, 0, 100); });
+  return o;
+}
+/* copie les réglages de couleur (curseurs, filtre, couleurs conservées) d'une fiche vers une autre */
+function copyColor(to, from){ to.couleur = Object.assign({}, from.couleur); to.filtre = from.filtre; to.selectif = readSelectif(from.selectif); }
+function colKey(cfg){ return [cfg.couleur, cfg.filtre, cfg.selectif]; }
 /* grille magnétique des calques : réglage de la fiche, la dernière valeur choisie sert de défaut aux nouvelles photos */
 function readGrille(g){ return {aimant:!g || g.aimant !== false, n:g && GRILLES.indexOf(+g.n) >= 0 ? +g.n : 12}; }
 function gridPref(){ try { return readGrille(JSON.parse(localStorage.getItem("esam-picture:grille") || "null")); } catch(e){ return readGrille(null); } }
@@ -396,6 +410,7 @@ function applyCfg(p, d){
   if(d.cadre && typeof d.cadre === "object") c.cadre = {x:+d.cadre.x || 0, y:+d.cadre.y || 0, w:+d.cadre.w || 0, h:+d.cadre.h || 0};
   if(d.couleur) Object.keys(c.couleur).forEach(k => { c.couleur[k] = clamp(+d.couleur[k] || 0, -100, 100); });
   if(FILTRES.some(f => f.id === d.filtre)) c.filtre = d.filtre;
+  c.selectif = readSelectif(d.selectif);
   c.flous = (Array.isArray(d.flous) ? d.flous : []).map(z => ({id:z.id || uid(), forme:z.forme === "rect" ? "rect" : "ellipse", mode:MODES_FLOU.some(m => m[0] === z.mode) ? z.mode : "doux",
     force:clamp(+z.force || 2, 1, 3), x:clamp(+z.x || 0.5, 0, 1), y:clamp(+z.y || 0.5, 0, 1), w:clamp(+z.w || 0.2, 0.02, 1), h:clamp(+z.h || 0.2, 0.02, 1), angle:+z.angle || 0}));
   c.calques = (Array.isArray(d.calques) ? d.calques : []).filter(l => TYPES[l.type]).map(l => Object.assign(defLayer(l.type), l.type === "texte" && l.larg == null ? {larg:0.9} : {}, l, {id:l.id || uid(), x:clamp(+l.x || 0.5, -0.2, 1.2), y:clamp(+l.y || 0.5, -0.2, 1.2), s:clamp(+l.s || 1, 0.2, 5), rot:+l.rot || 0, ex:clamp(+l.ex || 1, 0.2, 5), ey:clamp(+l.ey || 1, 0.2, 5)}));
@@ -621,13 +636,27 @@ function drawRotated(ctx, p, k){
   ctx.restore();
 }
 function colorParams(cfg){
-  const f = FILTRES.find(x => x.id === cfg.filtre) || FILTRES[0], u = cfg.couleur, q = f.p;
-  return {lum:clamp(u.lum + (q.lum || 0), -100, 100), contraste:clamp(u.contraste + (q.contraste || 0), -100, 100), sat:clamp(u.sat + (q.sat || 0), -100, 100),
-    temp:clamp(u.temp + (q.temp || 0), -100, 100), vignette:clamp(u.vignette + (q.vignette || 0), 0, 100), teinte:q.teinte || null, teinteF:q.teinteF || 0};
+  const f = FILTRES.find(x => x.id === cfg.filtre) || FILTRES[0], u = cfg.couleur, q = f.p, sel = cfg.selectif && cfg.selectif.actif ? cfg.selectif : null;
+  // avec des couleurs conservées, le noir et blanc vient du réglage lui-même : la désaturation du filtre (Noir et blanc, Vintage) ne s'ajoute pas
+  return {lum:clamp(u.lum + (q.lum || 0), -100, 100), contraste:clamp(u.contraste + (q.contraste || 0), -100, 100), sat:clamp(u.sat + (sel && q.sat < 0 ? 0 : q.sat || 0), -100, 100),
+    temp:clamp(u.temp + (q.temp || 0), -100, 100), vignette:clamp(u.vignette + (q.vignette || 0), 0, 100), teinte:q.teinte || null, teinteF:q.teinteF || 0, sel:sel};
 }
-function isNeutral(c){ return !c.lum && !c.contraste && !c.sat && !c.temp && !c.vignette && !c.teinte; }
+function isNeutral(c){ return !c.lum && !c.contraste && !c.sat && !c.temp && !c.vignette && !c.teinte && !c.sel; }
+/* poids 0..1 d'un pixel source parmi les couleurs conservées : teinte dans une des bandes retenues (tolérance),
+   saturation au-dessus du seuil, chrominance suffisante (les pixels sombres ou gris ne comptent pas) ; transitions douces */
+function selBands(sel){ const f = 0.4 + sel.tolerance/100*1.2; return TEINTES.filter(t => sel.teintes.indexOf(t[0]) >= 0).map(t => [t[2], t[3]*f]); }
+function keepWeight(r, g, b, bands, sthr){
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), ch = mx - mn;
+  if(ch <= 20) return 0;
+  const ws = Math.min(1, Math.max(0, (ch/mx - sthr + 0.1)/0.2)); if(!ws) return 0;
+  let hue = (mx === r ? (g - b)/ch : mx === g ? 2 + (b - r)/ch : 4 + (r - g)/ch)*60; if(hue < 0) hue += 360;
+  let wh = 0;
+  for(let j = 0; j < bands.length; j++){ let dh = Math.abs(hue - bands[j][0]); if(dh > 180) dh = 360 - dh; const w = (bands[j][1]*1.25 - dh)/(bands[j][1]*0.5); if(w > wh) wh = w; }
+  return ws*Math.min(1, (ch - 20)/25)*Math.min(1, wh);
+}
 /* couleurs par pixel : tables par canal (luminosité, contraste, température), saturation autour de la luminance,
-   teinte dans les ombres (filtre ESAM), vignettage radial. Même calcul pour l'aperçu et l'export. */
+   teinte dans les ombres (filtre ESAM), couleurs conservées (le reste en gris, mesuré sur le pixel d'origine), vignettage radial.
+   Même calcul pour l'aperçu et l'export. */
 function applyColor(canvas, c){
   if(isNeutral(c)) return;
   const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height, id = ctx.getImageData(0, 0, W, H), d = id.data;
@@ -640,14 +669,17 @@ function applyColor(canvas, c){
   const sat = 1 + c.sat/100*(c.sat > 0 ? 1 : 1), hasSat = c.sat !== 0, vig = c.vignette/100, hasVig = vig > 0;
   let tr = 0, tg = 0, tb = 0, tf = c.teinte ? c.teinteF : 0;
   if(tf){ tr = parseInt(c.teinte.slice(1, 3), 16); tg = parseInt(c.teinte.slice(3, 5), 16); tb = parseInt(c.teinte.slice(5, 7), 16); }
+  const sel = c.sel, bands = sel ? selBands(sel) : [], sthr = sel ? sel.seuil/100 : 0, boost = sel ? 1 + sel.renfort/100 : 1;
   const cx = W/2, cy = H/2, rmax = Math.sqrt(cx*cx + cy*cy);
   for(let y = 0; y < H; y++){
     const dy = (y - cy)/rmax;
     for(let x = 0; x < W; x++){
       const i = (y*W + x)*4;
+      const kp = sel ? keepWeight(d[i], d[i+1], d[i+2], bands, sthr)*boost : 1;
       let r = lut[0][d[i]], g = lut[1][d[i+1]], b = lut[2][d[i+2]];
       if(hasSat){ const l = 0.299*r + 0.587*g + 0.114*b; r = l + (r - l)*sat; g = l + (g - l)*sat; b = l + (b - l)*sat; }
       if(tf){ const l = (r + g + b)/765, k = tf*(1 - l); r += (tr - r)*k; g += (tg - g)*k; b += (tb - b)*k; }
+      if(sel){ const l = 0.299*r + 0.587*g + 0.114*b; r = l + (r - l)*kp; g = l + (g - l)*kp; b = l + (b - l)*kp; }
       if(hasVig){ const dx = (x - cx)/rmax, dd = dx*dx + dy*dy, k = 1 - vig*0.85*dd*dd; r *= k; g *= k; b *= k; }
       d[i] = r; d[i+1] = g; d[i+2] = b;
     }
@@ -661,7 +693,7 @@ function cropCanvas(q, cadre, w, h){
   applyColor(c, colorParams(q.cfg));
   return c;
 }
-function baseKey(p, cw, ch){ const c = p.cfg; return JSON.stringify([c.format, c.cadre, c.rotation, c.couleur, c.filtre, cw, ch]); }
+function baseKey(p, cw, ch){ const c = p.cfg; return JSON.stringify([c.format, c.cadre, c.rotation, colKey(c), cw, ch]); }
 /* la photo elle-même (cadre et couleurs de sa fiche), cache p.cache.own */
 function ownCanvas(p, cw, ch){
   const key = baseKey(p, cw, ch);
@@ -760,7 +792,7 @@ function refsOf(p){
   if(m.mode === "fusion" && m.fusion) return [photoOf(p, m.fusion.src)];
   return [];
 }
-function montKey(p){ if(!isMontage(p)) return ""; return JSON.stringify([p.cfg.montage, refsOf(p).map(q => q ? [q.id, q.cfg.rotation, q.cfg.couleur, q.cfg.filtre] : null)]); }
+function montKey(p){ if(!isMontage(p)) return ""; return JSON.stringify([p.cfg.montage, refsOf(p).map(q => q ? [q.id, q.cfg.rotation, colKey(q.cfg)] : null)]); }
 /* petit cache des rendus intermédiaires du montage (bandes, photo superposée), dans le cache de la photo maître */
 function cached(p, key, make){
   const c = p.cache.preps || (p.cache.preps = {});
@@ -769,14 +801,14 @@ function cached(p, key, make){
   return c[key] = make();
 }
 function prepCanvas(p, q, maxSide){
-  return cached(p, JSON.stringify(["prep", q.id, q.cfg.rotation, q.cfg.couleur, q.cfg.filtre, maxSide]), () => {
+  return cached(p, JSON.stringify(["prep", q.id, q.cfg.rotation, colKey(q.cfg), maxSide]), () => {
     const sw = srcW(q), sh = srcH(q), k = Math.min(1, maxSide/Math.max(sw, sh)), c = mkCanvas(sw*k, sh*k);
     drawRotated(c.getContext("2d"), q, k); applyColor(c, colorParams(q.cfg)); return c;
   });
 }
 /* mode chaleur : seuls les pixels plus clairs que le seuil restent (rampe douce), pour faire ressortir les points chauds */
 function heatCanvas(p, q, prep, seuil){
-  return cached(p, JSON.stringify(["chaleur", q.id, q.cfg.rotation, q.cfg.couleur, q.cfg.filtre, prep.width, seuil]), () => {
+  return cached(p, JSON.stringify(["chaleur", q.id, q.cfg.rotation, colKey(q.cfg), prep.width, seuil]), () => {
     const c = mkCanvas(prep.width, prep.height), x = c.getContext("2d"); x.drawImage(prep, 0, 0);
     const id = x.getImageData(0, 0, c.width, c.height), d = id.data, t = seuil/100*255, soft = 26;
     for(let i = 0; i < d.length; i += 4){ const l = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2]; d[i+3] = clamp((l - t + soft)/(2*soft), 0, 1)*255; }
@@ -784,7 +816,7 @@ function heatCanvas(p, q, prep, seuil){
   });
 }
 function paneCanvas(p, q, cadre, w, h){
-  return cached(p, JSON.stringify(["bande", q.id, q.cfg.rotation, cadre, q.cfg.couleur, q.cfg.filtre, w, h]), () => cropCanvas(q, cadre, w, h));
+  return cached(p, JSON.stringify(["bande", q.id, q.cfg.rotation, cadre, colKey(q.cfg), w, h]), () => cropCanvas(q, cadre, w, h));
 }
 function placeholder(ctx, r, name, u){
   ctx.save(); ctx.fillStyle = "#3a3b40"; ctx.fillRect(r.x, r.y, r.w, r.h);
@@ -1061,7 +1093,7 @@ function zoneBox(p, l, o){
 /* contenu de la loupe (w x h pixels), en cache */
 function loupeCanvas(p, l, q, cadre, w, h, cw, ch){
   const fromBase = l.src ? false : zoomFromBase(p, l);
-  return cached(p, JSON.stringify(["loupe", l.id, q.id, cadre, w, h, fromBase, q.cfg.rotation, q.cfg.couleur, q.cfg.filtre, fromBase ? [cw, ch] : 0]), () => {
+  return cached(p, JSON.stringify(["loupe", l.id, q.id, cadre, w, h, fromBase, q.cfg.rotation, colKey(q.cfg), fromBase ? [cw, ch] : 0]), () => {
     if(!fromBase) return cropCanvas(q, cadre, w, h);
     const base = blurredCanvas(p, cw, ch), c = mkCanvas(w, h), x = c.getContext("2d");
     const cr = isBandes(p) ? cadre : (() => { const k = cropRef(p); return {x:(cadre.x - k.x)/k.w, y:(cadre.y - k.y)/k.h, w:cadre.w/k.w, h:cadre.h/k.h}; })();
@@ -1660,6 +1692,14 @@ function renderPanel(){
       h += `<p class="hint">${q === p ? "Les couleurs de la photo de base. Les autres photos du montage gardent leurs propres couleurs : choisissez-en une pour la régler en voyant le résultat dans le montage." : `Vous réglez les couleurs de ${esc(q.name)} telles qu'elles apparaissent dans ce montage (et partout où cette photo est utilisée : elles sont enregistrées dans sa fiche).`}</p></div>`;
     }
     h += `<div class="grp"><span class="lbl">Filtre</span>${chips(FILTRES.map(x => [x.id, x.nom]), cq.filtre, "filtre")}</div>`;
+    const sel = cq.selectif || readSelectif(null);
+    h += `<div class="grp"><span class="lbl">Couleurs conservées</span>${chips([["0","Non"],["1","Oui : le reste en noir et blanc"]], sel.actif ? "1" : "0", "selact")}`;
+    if(sel.actif){
+      h += `<div class="sub"><div class="grp"><span class="lbl">Couleurs qui restent</span><div class="chips">${TEINTES.map(t => `<button type="button" class="chip" data-steinte="${t[0]}" aria-pressed="${sel.teintes.indexOf(t[0]) >= 0}"><i class="pastille" style="background:${t[4]}"></i>${esc(t[1])}</button>`).join("")}</div></div>`;
+      h += range("Tolérance (largeur des teintes)", "sel=\"tolerance\"", sel.tolerance, 0, 100) + range("Seuil (les couleurs ternes passent en gris)", "sel=\"seuil\"", sel.seuil, 0, 100) + range("Renfort des couleurs conservées", "sel=\"renfort\"", sel.renfort, 0, 100);
+      h += `<p class="hint">Pensé pour les tenues : le jaune fluo et le rouge vif restent en couleur, tout le reste de la photo passe en noir et blanc. Si la peau ou un rocher reste coloré, montez le seuil ou baissez la tolérance ; si une tenue vire au gris, faites l'inverse. Le filtre « Noir et blanc » n'est pas nécessaire (il ne joue plus que sur le contraste).</p></div>`;
+    }
+    h += `</div>`;
     h += range("Luminosité", "col=\"lum\"", u.lum, -100, 100) + range("Contraste", "col=\"contraste\"", u.contraste, -100, 100) + range("Saturation", "col=\"sat\"", u.sat, -100, 100)
       + range("Température (froid à chaud)", "col=\"temp\"", u.temp, -100, 100) + range("Vignettage", "col=\"vignette\"", u.vignette, 0, 100);
     h += `<div class="actions"><button type="button" class="btn small ghost" data-act="colReset">Réinitialiser</button><button type="button" class="btn small ghost" data-act="colAll"${S.photos.length > 1 ? "" : " disabled"}>Appliquer à toutes les photos</button>${q !== p ? `<button type="button" class="btn small ghost" data-act="colSame">Mêmes réglages que la photo de base</button>` : ""}</div>`;
@@ -1823,6 +1863,13 @@ $("panel").addEventListener("click", e => {
   let redraw = true;
   if(d.fmt){ c.format = d.fmt; c.cadre = null; fixCadre(p); }
   else if(d.filtre){ const q = colorTarget(p); q.cfg.filtre = d.filtre; if(q !== p){ q.cache = {}; persist(q); } }
+  else if(d.selact || d.steinte){
+    const q = colorTarget(p), sel = q.cfg.selectif = readSelectif(q.cfg.selectif);
+    if(d.selact) sel.actif = d.selact === "1";
+    else if(sel.teintes.indexOf(d.steinte) >= 0) sel.teintes = sel.teintes.filter(t => t !== d.steinte);
+    else sel.teintes = TEINTES.map(t => t[0]).filter(t => t === d.steinte || sel.teintes.indexOf(t) >= 0);
+    if(q !== p){ q.cache = {}; persist(q); }
+  }
   else if(d.ctarget){ S.csrc = d.ctarget === p.id ? null : d.ctarget; renderPanel(); draw(); return; }
   else if(d.ctab){ S.csrc = d.ctab === p.id ? null : d.ctab; goTab("couleur"); return; }
   else if(d.fsel){ S.fsel = d.fsel; }
@@ -1866,9 +1913,9 @@ $("panel").addEventListener("click", e => {
     }
     else if(a === "center"){ const m = maxCadre(p); c.cadre.x = m.x + (m.w - c.cadre.w)/2; c.cadre.y = m.y + (m.h - c.cadre.h)/2; fixCadre(p); }
     else if(a === "maxc"){ c.cadre = null; fixCadre(p); }
-    else if(a === "colReset"){ const q = colorTarget(p); q.cfg.couleur = newCfg().couleur; q.cfg.filtre = "aucun"; if(q !== p){ q.cache = {}; persist(q); } }
-    else if(a === "colAll"){ const q = colorTarget(p); S.photos.forEach(x => { if(x !== q){ x.cfg.couleur = Object.assign({}, q.cfg.couleur); x.cfg.filtre = q.cfg.filtre; x.cache = {}; if(x !== p) persist(x); } }); toast("Couleurs et filtre appliqués à toutes les photos."); }
-    else if(a === "colSame"){ const q = colorTarget(p); if(q !== p){ q.cfg.couleur = Object.assign({}, c.couleur); q.cfg.filtre = c.filtre; q.cache = {}; persist(q); } }
+    else if(a === "colReset"){ const q = colorTarget(p); copyColor(q.cfg, newCfg()); if(q !== p){ q.cache = {}; persist(q); } }
+    else if(a === "colAll"){ const q = colorTarget(p); S.photos.forEach(x => { if(x !== q){ copyColor(x.cfg, q.cfg); x.cache = {}; if(x !== p) persist(x); } }); toast("Couleurs et filtre appliqués à toutes les photos."); }
+    else if(a === "colSame"){ const q = colorTarget(p); if(q !== p){ copyColor(q.cfg, c); q.cache = {}; persist(q); } }
     else if(a === "addZone") addZone(p);
     else if(a === "dupZone"){ const z = c.flous.find(x => x.id === S.fsel); if(z){ const n = Object.assign({}, z, {id:uid(), x:clamp(z.x + z.w*0.6, 0, 1)}); c.flous.push(n); S.fsel = n.id; } }
     else if(a === "delZone"){ delZone(p); return; }
@@ -1908,6 +1955,7 @@ $("panel").addEventListener("input", e => {
   const lbl = t.parentElement && t.parentElement.querySelector(".val");
   if(d.zoom !== undefined){ const m = maxCadre(p), o = c.cadre, w = m.w*v/100, cxp = o.x + o.w/2, cyp = o.y + o.h/2; o.w = w; o.h = w*srcW(p)/srcH(p)/(fmtOf(c).w/fmtOf(c).h); o.x = cxp - o.w/2; o.y = cyp - o.h/2; fixCadre(p); }
   else if(d.col){ const q = colorTarget(p); q.cfg.couleur[d.col] = v; if(q !== p){ q.cache = {}; clearTimeout(S.inputT2); S.inputT2 = setTimeout(() => persist(q), 400); } }
+  else if(d.sel){ const q = colorTarget(p); q.cfg.selectif = readSelectif(q.cfg.selectif); q.cfg.selectif[d.sel] = clamp(Math.round(v), 0, 100); if(q !== p){ q.cache = {}; clearTimeout(S.inputT2); S.inputT2 = setTimeout(() => persist(q), 400); } }
   else if(d.meta){
     c.meta = c.meta || readMeta(null); c.meta[d.meta] = clean(t.value).slice(0, 300);
     if(d.meta !== "description") try { localStorage.setItem("esam-picture:meta", JSON.stringify({auteur:c.meta.auteur, droits:c.meta.droits})); } catch(err){}
@@ -1972,7 +2020,7 @@ function applyAll(p){
   S.photos.forEach(x => {
     if(x === p) return;
     x.cfg.format = c.format; x.cfg.cadre = null; fixCadre(x);
-    x.cfg.couleur = Object.assign({}, c.couleur); x.cfg.filtre = c.filtre;
+    copyColor(x.cfg, c);
     x.cfg.meta = Object.assign(readMeta(x.cfg.meta), {auteur:(c.meta || META_DEF).auteur, droits:(c.meta || META_DEF).droits});
     x.cfg.calques = x.cfg.calques.filter(l => l.type !== "logo" && l.type !== "legende").concat(c.calques.filter(l => l.type === "logo" || l.type === "legende").map(l => Object.assign({}, l, {id:uid()})));
     x.cache = {}; persist(x);

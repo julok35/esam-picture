@@ -22,7 +22,7 @@ Le CSS vient en premier (variables de la charte dans `:root`, mode sombre), puis
 | modèle | État `S`, formats, filtres, fiche `cfg` par défaut, lecture tolérante d'une fiche, cadre maximal | `newCfg`, `defLayer`, `applyCfg`, `fixCadre`, `persist`, `restoreCfg` |
 | chargement | Décodage (orientation EXIF), image de travail, vignette, ajout à la pellicule | `decode`, `addPhotos` |
 | dossier de travail | `showDirectoryPicker` (Chrome, Edge) avec reprise par IndexedDB, repli `webkitdirectory`, écriture des fiches et des exports | `openDir`, `walkDir`, `importFolder`, `writeInDir`, `scheduleFicheWrite` |
-| rendu : base | Rotation, recadrage, mise à l'échelle, couleurs par pixel (tables par canal, saturation, teinte, vignettage) | `baseCanvas`, `applyColor`, `colorParams` |
+| rendu : base | Rotation, recadrage, mise à l'échelle, couleurs par pixel (tables par canal, saturation, teinte, couleurs conservées, vignettage) | `baseCanvas`, `applyColor`, `colorParams`, `keepWeight` |
 | rendu : montage | Composition avec d'autres photos chargées : bandeaux (bandes égales, cadre et étiquette par bande) ou superposition (photo posée en transparence, mode de fusion, fenêtre aux bords fondus) ; photos manquantes remplacées par un panneau | `readMontage`, `fixMontage`, `paneRects`, `montageCanvas`, `drawBandes`, `drawFusion`, `prepCanvas`, `heatCanvas`, `fusionBox`, `fenetreBox` |
 | rendu : flous | Zones converties dans le repère de sortie ; doux, pixelisé, dynamique ; masque aux bords fondus | `applyBlurs`, `blurredCanvas`, `downUp` |
 | rendu : calques | Logo (cartouche ou seul), titre, texte, légende, flèche et cercle au crayon, zoom incrusté (loupe : zone grossie de la photo ou autre photo incrustée), éléments de cadre (signature, montagne, biais, coin, carte) ; boîte de chaque calque | `drawLayer`, `drawBrand`, `textBlock`, `drawLegende`, `drawFleche`, `drawCercle`, `drawZoom`, `drawZoomLien`, `loupeCanvas`, `zoneBox`, `fitZone`, `drawForme`, `drawCoin`, `drawSignature`, `drawCarte`, `pencil`, `renderAll` |
@@ -46,6 +46,10 @@ rotation   0 | 90 | 180 | 270
 cadre      {x, y, w, h} en fraction de l'image source (tournée) ; ratio imposé par le format (fixCadre)
 couleur    {lum, contraste, sat, temp, vignette} de -100 à 100
 filtre     aucun | esam | nb | chaud | froid | vif | doux | vintage (préréglage ajouté aux réglages)
+selectif   {actif, teintes: [jaune|rouge|orange|vert|bleu|rose], tolerance, seuil, renfort (0 à 100)}  couleurs conservées :
+             seules les teintes choisies restent en couleur (tenues jaune fluo, rouge vif), le reste passe en noir et blanc ;
+             tolerance = largeur des bandes de teinte, seuil = saturation minimale (la peau, les rochers passent en gris),
+             renfort = saturation ajoutée aux couleurs conservées ; la désaturation d'un filtre (nb, vintage) ne s'ajoute pas
 flous      [{id, forme: ellipse|rect, mode: doux|pixel|dynamique, force: 1..3, x, y, w, h, angle}]  fractions de la source
 calques    [{id, type, x, y, s, rot, ex, ey, ...}]  x, y en fraction de l'image de sortie, s échelle, rot en degrés,
              ex, ey étirement horizontal et vertical (poignées blanches du bord droit et du bord bas, tous les calques sauf
@@ -91,6 +95,8 @@ Les tailles des calques sont en unités `u = W/1080` : un même calque a la mêm
 
 Métadonnées : le JPEG encodé par le canvas ne reprend rien de la photo d'origine (ni EXIF, ni GPS, ni date, ni appareil). `withMeta` retire en plus tout segment APP1 à APP15 et commentaire, puis écrit un EXIF (Artist, Copyright, Software, ImageDescription, en ASCII sans accents, Orientation 1) et un XMP (dc:creator, dc:rights, dc:description, xmp:CreatorTool, en UTF-8). Aucune date, aucun lieu. Les images extraites d'une vidéo passent par le même traitement.
 
+Couleurs conservées (`cfg.selectif`) : `keepWeight` donne à chaque pixel de la source un poids 0..1 (teinte HSV dans une des bandes choisies, avec des bords adoucis, saturation au-dessus du seuil, chrominance suffisante pour ignorer le bruit des pixels sombres) ; après les tables, la saturation et la teinte, le pixel est ramené vers sa luminance selon ce poids, multiplié par le renfort. Les clés de cache des couleurs passent par `colKey` (curseurs, filtre, couleurs conservées).
+
 Flous sans `ctx.filter` : la région est réduite en plusieurs passes puis remontée (`downUp`), ce qui approche un flou gaussien ; le pixelisé remonte sans lissage ; le dynamique superpose la région décalée le long de l'orientation. Le masque est la forme pleine légèrement réduite puis adoucie par `downUp`, d'où des bords fondus proportionnels à la zone.
 
 ## 5. Tests
@@ -99,6 +105,7 @@ Flous sans `ctx.filter` : la région est réduite en plusieurs passes puis remon
 
 ## 6. Changelog
 
+- 0.8 (2026-10-31) : couleurs conservées dans l'onglet Couleur : la photo passe en noir et blanc sauf les couleurs choisies (jaune fluo et rouge vif des tenues par défaut ; orange, vert, bleu, rose et violet au choix), avec tolérance, seuil (la peau et les rochers restent gris) et renfort des couleurs conservées. Réglage enregistré dans la fiche, copié avec les autres réglages de couleur.
 - 0.7 (2026-10-30) : largeur et hauteur réglables séparément sur l'image pour tous les textes et formes : poignée blanche du bord droit (largeur) et du bord bas (hauteur), avec les curseurs correspondants. Texte, flèche, cercle, montagne, biais, carte et loupe gardent une largeur ou une hauteur propre (sans déformer leur contenu) ; titre, légende, signature et les autres s'étirent. Sur un petit objet, un toucher près du centre reste un déplacement.
 
 - 0.6 (2026-10-30) : couleurs de chaque photo du montage : l'onglet Couleur propose « Image à régler » (dessous, dessus, bandes, loupe) et modifie la fiche de la photo choisie en montrant le résultat dans le montage ; boutons « Couleurs du dessus / du dessous / de cette photo / de la photo incrustée » dans Montage et dans la loupe ; « Mêmes réglages que la photo de base ».

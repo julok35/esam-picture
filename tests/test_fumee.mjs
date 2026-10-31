@@ -93,6 +93,24 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   await page.waitForTimeout(500);
   await page.screenshot({ path: path.join(caps, `${label}_couleur.png`) });
   check((await page.getAttribute('[data-filtre="esam"]', "aria-pressed")) === "true", "filtre ESAM sélectionné");
+  // couleurs conservées : le reste en noir et blanc ; le fond bleu de la photo de test devient gris, puis redevient bleu si on garde le bleu
+  const pixel = async () => page.evaluate(() => { const cv = document.getElementById("cv"), d = cv.getContext("2d").getImageData(Math.round(cv.width / 2), Math.round(cv.height / 2), 1, 1).data; return [d[0], d[1], d[2]]; });
+  const px0 = await pixel();
+  await page.click('[data-selact="1"]');
+  await page.waitForTimeout(600);
+  check((await page.getAttribute('[data-steinte="jaune"]', "aria-pressed")) === "true" && (await page.getAttribute('[data-steinte="rouge"]', "aria-pressed")) === "true" && (await page.getAttribute('[data-steinte="bleu"]', "aria-pressed")) === "false", "couleurs conservées : jaune fluo et rouge vif par défaut");
+  const px1 = await pixel();
+  check(px0[2] - px0[0] > 25 && Math.abs(px1[0] - px1[1]) < 8 && Math.abs(px1[1] - px1[2]) < 8, `fond bleu passé en gris (${px0} puis ${px1})`);
+  await page.click('[data-steinte="bleu"]');
+  await page.$eval('input[data-sel="renfort"]', el => { el.value = 40; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await page.waitForTimeout(600);
+  const px2 = await pixel();
+  check(px2[2] - px2[0] > 25, `le bleu conservé reste bleu (${px2})`);
+  await page.screenshot({ path: path.join(caps, `${label}_couleur_selectif.png`) });
+  const cfSel = await page.evaluate(() => JSON.parse(localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith("esam-picture:DJI")))).selectif);
+  check(cfSel && cfSel.actif === true && cfSel.teintes.join() === "jaune,rouge,bleu" && cfSel.renfort === 40, "couleurs conservées enregistrées dans la fiche");
+  await page.click('[data-steinte="bleu"]');
+  await page.waitForTimeout(300);
 
   // Flous
   await page.click('[data-tab="flous"]');
