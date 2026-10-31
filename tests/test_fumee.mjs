@@ -109,6 +109,25 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   await page.screenshot({ path: path.join(caps, `${label}_couleur_selectif.png`) });
   const cfSel = await page.evaluate(() => JSON.parse(localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith("esam-picture:DJI")))).selectif);
   check(cfSel && cfSel.actif === true && cfSel.teintes.join() === "jaune,rouge,bleu" && cfSel.renfort === 40, "couleurs conservées enregistrées dans la fiche");
+  // zone au lasso autour du centre : le bleu ne reste que dedans, le coin passe en gris ; « tout en gris » inverse
+  const pixelAt = async (fx, fy) => page.evaluate(([fx, fy]) => { const cv = document.getElementById("cv"), d = cv.getContext("2d").getImageData(Math.round(cv.width * fx), Math.round(cv.height * fy), 1, 1).data; return [d[0], d[1], d[2]]; }, [fx, fy]);
+  const cvb = await page.locator("#cv").boundingBox(), lx = f => cvb.x + cvb.width * f, ly = f => cvb.y + cvb.height * f;
+  await page.click('[data-act="lasso"]');
+  check((await page.getAttribute('[data-act="lasso"]', "aria-pressed")) === "true", "mode lasso activé");
+  await page.mouse.move(lx(0.3), ly(0.3)); await page.mouse.down();
+  for (const [fx, fy] of [[0.7, 0.3], [0.7, 0.7], [0.3, 0.7], [0.3, 0.35]]) await page.mouse.move(lx(fx), ly(fy), { steps: 8 });
+  await page.mouse.up(); await page.waitForTimeout(700);
+  const zone = await page.evaluate(() => JSON.parse(localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith("esam-picture:DJI")))).selectif.zones);
+  check(zone.length === 1 && zone[0].pts.length >= 8 && zone[0].sens === "garder", `zone au lasso enregistrée (${zone.length && zone[0].pts.length} points)`);
+  const pc = await pixelAt(0.5, 0.5), pk = await pixelAt(0.08, 0.08);
+  check(pc[2] - pc[0] > 25 && Math.abs(pk[0] - pk[1]) < 8 && Math.abs(pk[1] - pk[2]) < 8, `bleu gardé au centre (${pc}), coin en gris (${pk})`);
+  check((await page.getAttribute('[data-zsel]', "aria-pressed")) === "true", "la zone tracée est choisie");
+  await page.click('[data-zsens="exclure"]'); await page.waitForTimeout(700);
+  const pc2 = await pixelAt(0.5, 0.5), pk2 = await pixelAt(0.08, 0.08);
+  check(Math.abs(pc2[0] - pc2[1]) < 8 && Math.abs(pc2[1] - pc2[2]) < 8 && pk2[2] - pk2[0] > 25, `zone « tout en gris » : centre gris (${pc2}), coin bleu (${pk2})`);
+  await page.screenshot({ path: path.join(caps, `${label}_couleur_lasso.png`) });
+  await page.click('[data-act="delLasso"]'); await page.waitForTimeout(300);
+  check((await page.$$('[data-zsel]')).length === 0, "zone supprimée");
   await page.click('[data-steinte="bleu"]');
   await page.waitForTimeout(300);
 

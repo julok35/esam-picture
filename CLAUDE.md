@@ -18,7 +18,7 @@ Projet : préparation des photos d'intervention de l'ESAM (secours animalier en 
 ## Points délicats déjà rencontrés
 
 - Photos de téléphone : orientation EXIF appliquée par `createImageBitmap(file, {imageOrientation:"from-image"})`, repli sur `<img>`. L'image de travail est limitée à 2560 px de côté long (mémoire sur téléphone).
-- Les zones de flou sont en fraction de l'image source (elles suivent le contenu si le cadre change) ; les calques en fraction de l'image de sortie (ce sont des éléments de composition).
+- Les zones de flou et les zones au lasso des couleurs conservées sont en fraction de l'image source (elles suivent le contenu si le cadre change, et tournent avec la photo) ; les calques en fraction de l'image de sortie (ce sont des éléments de composition).
 - Sur téléphone, l'aperçu doit rester visible pendant les réglages : `.left` (scène + onglets) est collant sous l'en-tête, 46 % de la hauteur au plus.
 - Un objet déjà sélectionné garde la main s'il est sous le doigt (sinon on prend l'objet du dessus) : indispensable quand plusieurs calques se superposent au centre.
 - Le cache de rendu (`p.cache.base`, `p.cache.blur`) est par taille : l'export rend dans un cache à part pour ne pas écraser celui de l'aperçu.
