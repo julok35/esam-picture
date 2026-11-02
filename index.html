@@ -84,6 +84,10 @@ textarea.field{min-height:64px;resize:vertical}
 .chip.add{border-style:dashed}
 .chip .pastille{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:7px;vertical-align:-1px;border:1px solid rgba(0,0,0,.25)}
 .chip small{display:block;font-weight:500;font-size:11px;color:inherit;opacity:.8}
+.chip.ck{display:inline-flex;align-items:center;gap:7px;cursor:pointer}
+.chip.ck input,.ckl input{width:18px;height:18px;margin:0;accent-color:var(--blue);flex:none}
+.chip.ck:has(input:checked){border-color:var(--ink)}
+.ckl{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;margin:10px 0 0;cursor:pointer;min-height:36px}
 .chip.pic{display:inline-flex;align-items:center;gap:8px;padding:3px 12px 3px 3px}
 .chip.pic img{width:32px;height:32px;border-radius:16px;object-fit:cover;display:block;background:var(--soft)}
 .chip.pic span{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -283,7 +287,9 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 /* Photos ESAM : préparation d'images pour les réseaux sociaux. Un seul fichier, pas de build, ES2017.
    Sections : utils, modèle, formats, chargement, dossier de travail, rendu (base, couleur, flous, calques),
    aperçu et interactions, panneaux, export, démarrage. Voir docs/ARCHITECTURE.md. */
-const APP_VERSION = "0.12";
+const APP_VERSION = "0.13";
+/* pied standard du texte de publication proposé (onglet Export, bouton « Proposer ») : à modifier ici */
+const PUB_PIED = "Équipe de Secours Animalier en Montagne\n#ESAM #SecoursAnimalier #Montagne";
 const $ = id => document.getElementById(id);
 
 /* ---------- utils ---------- */
@@ -343,7 +349,10 @@ function wrapLines(ctx, txt, maxW){
        ar, hr) les règlent à la place sans déformer leur contenu,
        zoom (loupe) : src (null = une zone de cette photo, sinon le nom d'une autre photo chargée : caméra zoom, thermique),
        zone {x, y, w} centre et largeur en fraction de la source grossie, forme cercle|rect, ar, couleur, epais, lien, etiquette,
-     montage {mode, sens, sep, sepCouleur, bandes, fusion} : composition avec d'autres photos chargées (voir « rendu : montage »). */
+     montage {mode, sens, sep, sepCouleur, bandes, fusion} : composition avec d'autres photos chargées (voir « rendu : montage »),
+     cadres {carre, portrait, story, paysage, large} : dernier cadre réglé pour chaque format (repris quand on revient à ce
+       format, et pour les déclinaisons de l'onglet Export) ; vide dans une fiche d'avant 0.13,
+     pub {texte, alt} : texte de publication (2000 caractères) et texte alternatif (250), écrits dans le .txt joint à l'export. */
 const pendingFiches = {};   // fiches importées avant leurs photos, par nom de fichier
 const S = {photos:[], sel:null, tab:"cadre", mode:"calques", dirHandle:null, dirWritable:false, fsel:null, csel:null, lsub:"calque", csrc:null, msel:0, msub:"calque", mview:"deux", zsel:null, lasso:false, original:false, quick:false, secteurs:[]};   // original : bouton « Original » maintenu ; quick : aperçu allégé pendant le glissement d'un curseur (transitoires, jamais dans la fiche)
 const FORMATS = [
@@ -383,7 +392,21 @@ function srcW(p){ return p.cfg.rotation % 180 ? p.h : p.w; }
 function srcH(p){ return p.cfg.rotation % 180 ? p.w : p.h; }
 function newCfg(name){
   return {version:1, app:"esam-picture", fichier:name, format:"carre", cadre:null, rotation:0, inclinaison:0,
-    couleur:{lum:0, contraste:0, sat:0, temp:0, vignette:0}, filtre:"aucun", selectif:readSelectif(null), flous:[], calques:[], montage:newMontage(), grille:gridPref(), meta:readMeta(metaPref()), nom:readNom(null)};
+    couleur:{lum:0, contraste:0, sat:0, temp:0, vignette:0}, filtre:"aucun", selectif:readSelectif(null), flous:[], calques:[], montage:newMontage(), grille:gridPref(), meta:readMeta(metaPref()), nom:readNom(null), cadres:{}, pub:readPub(null)};
+}
+/* texte de publication et texte alternatif (accessibilité) : lecture tolérante (fiche d'avant 0.13 : vides) */
+const PUB_MAX = 2000, ALT_MAX = 250;
+function readPub(x){
+  const o = {texte:"", alt:""};
+  if(x && typeof x.texte === "string") o.texte = clean(x.texte).slice(0, PUB_MAX);
+  if(x && typeof x.alt === "string") o.alt = clean(x.alt).replace(/\s*\n\s*/g, " ").slice(0, ALT_MAX);
+  return o;
+}
+/* cadres par format : {format: {x, y, w, h}} ; les valeurs illisibles sont ignorées (fitCadre les borne au rendu) */
+function readCadres(d){
+  const o = {};
+  if(d && typeof d === "object") FORMATS.filter(f => f.w).forEach(f => { const k = d[f.id]; if(k && typeof k === "object" && +k.w > 0 && +k.h > 0) o[f.id] = {x:+k.x || 0, y:+k.y || 0, w:+k.w, h:+k.h}; });
+  return o;
 }
 /* nom du fichier exporté : AAAAMMJJ_animaux_secteur_photo-Com-ESAM_hhmmss.jpg ; chaque champ vide est déduit
    (date, animaux et secteur de la légende ; heure de prise de vue lue dans l'EXIF de la photo d'origine) */
@@ -442,7 +465,22 @@ function fitCadre(c, sw, sh, r){
   return c;
 }
 function maxCadre(p){ const f = fmtOf(p.cfg); return f.w ? maxCadreFor(srcW(p), srcH(p), f.w/f.h) : {x:0, y:0, w:1, h:1}; }
-function fixCadre(p){ const f = fmtOf(p.cfg); p.cfg.cadre = f.w ? fitCadre(p.cfg.cadre, srcW(p), srcH(p), f.w/f.h) : {x:0, y:0, w:1, h:1}; }
+/* impose le ratio du format au cadre et le mémorise comme dernier cadre de ce format (cfg.cadres) */
+function fixCadre(p){
+  const f = fmtOf(p.cfg), c = p.cfg;
+  c.cadre = f.w ? fitCadre(c.cadre, srcW(p), srcH(p), f.w/f.h) : {x:0, y:0, w:1, h:1};
+  if(f.w){ if(!c.cadres || typeof c.cadres !== "object") c.cadres = {}; c.cadres[f.id] = {x:c.cadre.x, y:c.cadre.y, w:c.cadre.w, h:c.cadre.h}; }
+}
+/* cadre d'un format : le dernier réglé pour ce format s'il existe, sinon le cadre maximal centré sur le cadre courant */
+function cadreFor(p, id){
+  const f = FORMATS.find(x => x.id === id) || FORMATS[0], c = p.cfg, k = c.cadres && c.cadres[id];
+  if(!f.w) return {x:0, y:0, w:1, h:1};
+  if(k) return {x:k.x, y:k.y, w:k.w, h:k.h};
+  const m = maxCadreFor(srcW(p), srcH(p), f.w/f.h), cur = c.cadre || {x:0, y:0, w:1, h:1}, cx = cur.x + cur.w/2, cy = cur.y + cur.h/2;
+  return {x:clamp(cx - m.w/2, 0, 1 - m.w), y:clamp(cy - m.h/2, 0, 1 - m.h), w:m.w, h:m.h};
+}
+/* changement de format : le cadre de ce format est repris (cfg.cadres) ou recalculé */
+function setFormat(p, id){ const c = p.cfg; c.cadre = cadreFor(p, id); c.format = id; fixCadre(p); }
 function selected(){ return S.photos.find(p => p.id === S.sel) || null; }
 /* tag : réglage d'origine de la modification (des persist rapprochés d'un même tag font une seule entrée d'historique) ;
    false : restauration par annuler / rétablir (rien n'est empilé) */
@@ -529,6 +567,8 @@ function applyCfg(p, d){
   if(d.grille && typeof d.grille === "object") c.grille = readGrille(d.grille);
   if(d.meta && typeof d.meta === "object") c.meta = readMeta(d.meta);
   c.nom = readNom(d.nom);
+  c.cadres = readCadres(d.cadres);   // fiche d'avant 0.13 : seul le cadre du format courant (ajouté par fixCadre)
+  c.pub = readPub(d.pub);
   p.cfg = c; fixCadre(p); p.cache = {};
   return true;
 }
@@ -2098,7 +2138,7 @@ function moveLayer(p, id, dir){
    l'inclinaison (redressement d'horizon) est gardée */
 function rotatePhoto(p, right){
   const c = p.cfg;
-  c.rotation = ((c.rotation || 0) + (right ? 90 : 270)) % 360; c.cadre = null; fixCadre(p);
+  c.rotation = ((c.rotation || 0) + (right ? 90 : 270)) % 360; c.cadre = null; c.cadres = {}; fixCadre(p);   // les cadres des autres formats ne valent plus après un quart de tour
   if(isBandes(p)) c.montage.bandes.forEach(b => { if(photoOf(p, b.src) === p) b.cadre = null; });   // les bandes de cette photo repartent du cadre maximal
   else c.flous.forEach(z => { const x = z.x, y = z.y; if(right){ z.x = 1 - y; z.y = x; } else { z.x = y; z.y = 1 - x; } const w = z.w; z.w = z.h; z.h = w; });
   if(c.selectif) c.selectif.zones.forEach(z => { z.pts = z.pts.map(pt => right ? [1 - pt[1], pt[0]] : [pt[1], 1 - pt[0]]); });
@@ -2268,8 +2308,8 @@ function renderPanel(){
       h += `<p class="hint">Sur l'image : touchez un élément pour le choisir (deux fois pour écrire son texte), glissez pour le déplacer, pincez ou tirez la poignée jaune pour la taille, les blanches pour la largeur (bord droit) et la hauteur (bord bas), la bleue pour l'orienter. L'ordre de la liste est l'ordre de dessin (le dernier est au-dessus).</p>`;
     } else h += `<p class="hint">Aucun élément pour l'instant : ajoutez le logo, un titre, un texte, une légende, une flèche, un cercle ou des éléments de cadre.</p>`;
   } else if(S.tab === "export"){
-    const o = outSize(p), f = fmtOf(c), name = outName(p);
-    h += `<div class="card"><div class="kv">Photo : <b>${esc(p.path)}</b></div><div class="kv">Format : <b>${esc(f.nom)}</b> (${esc(f.res)}), <b>${o.W} x ${o.H}</b> px, JPEG</div><div class="kv">Fichier exporté : <b data-outname="1">${esc(name)}</b></div>`;
+    const o = outSize(p), f = fmtOf(c), name = exportName(p), pr = presse(), ox = exportSize(o, pr);
+    h += `<div class="card"><div class="kv">Photo : <b>${esc(p.path)}</b></div><div class="kv">Format : <b>${esc(f.nom)}</b> (${esc(f.res)}), <b>${o.W} x ${o.H}</b> px, JPEG</div>${pr ? `<div class="kv">Qualité presse : <b>${ox.W} x ${ox.H}</b> px, JPEG 97 %</div>` : ""}<div class="kv">Fichier exporté : <b data-outname="1">${esc(name)}</b></div>`;
     if(isMontage(p)){ const m = c.montage, fq = m.fusion ? photoOf(p, m.fusion.src) : null; h += `<div class="kv">Montage : <b>${m.mode === "bandes" ? `${m.bandes.length} bandeaux ${m.sens === "h" ? "empilés" : "côte à côte"}` : `superposition de ${esc(fq ? fq.name : (m.fusion && m.fusion.src) || "photo manquante")} (dessus) sur ${esc(p.name)} (dessous)`}</b></div>`; }
     const loupes = c.calques.filter(l => l.type === "zoom"); if(loupes.length) h += `<div class="kv">Zoom incrusté : <b>${loupes.map(l => l.src ? esc(l.src) : "une zone de la photo").join(", ")}</b></div>`;
     if(S.dirWritable) h += `<div class="kv">Dossier de travail : les exports vont dans <b>publication/</b>, la fiche est enregistrée à côté de la photo ${p.ficheOk ? "(à jour)" : ""}.</div>`;
@@ -2285,9 +2325,22 @@ function renderPanel(){
       + `<div class="grp"><span class="lbl">Auteur</span><input class="field" data-meta="auteur" value="${esc(m.auteur)}"></div>`
       + `<div class="grp"><span class="lbl">Droits</span><input class="field" data-meta="droits" value="${esc(m.droits)}"></div>`
       + `<div class="grp"><span class="lbl">Description (facultative)</span><input class="field" data-meta="description" value="${esc(m.description)}" placeholder="Ex. : Chien secouru par l'ESAM"><p class="hint">Évitez d'y mettre un lieu précis ou une date.</p></div>`;
+    const pb = readPub(c.pub);
+    h += `<div class="sub"><div class="lbl">Texte de publication</div>`
+      + `<div class="grp"><textarea class="field" data-pub="texte" rows="5" maxlength="${PUB_MAX}" aria-label="Texte de publication" placeholder="Texte à poster avec la photo (Facebook, Instagram, LinkedIn)">${esc(pb.texte)}</textarea>`
+      + `<div class="actions" style="margin-top:6px"><button type="button" class="btn small ghost" data-act="pubPropose">Proposer</button><button type="button" class="btn small ghost" data-act="pubCopy">Copier</button></div></div>`
+      + `<div class="lbl">Texte alternatif (accessibilité)</div>`
+      + `<div class="grp"><textarea class="field" data-pub="alt" rows="2" maxlength="${ALT_MAX}" aria-label="Texte alternatif" placeholder="Description de l'image pour les personnes aveugles ou malvoyantes">${esc(pb.alt)}</textarea>`
+      + `<div class="actions" style="margin-top:6px"><button type="button" class="btn small ghost" data-act="altPropose">Proposer</button><button type="button" class="btn small ghost" data-act="altCopy">Copier</button></div></div>`
+      + `<p class="hint">« Proposer » rédige le texte d'après la légende (animal, date, secteur) et le titre ; le pied standard ESAM et les mots-dièse sont ajoutés à la publication. Les deux textes sont joints à l'export dans un fichier .txt (dossier de travail, ZIP) ; le partage passe le texte de publication.</p></div>`;
+    h += `<div class="grp"><span class="lbl">Qualité</span>${chips(QUALITES, S.qualite, "qual")}<p class="hint">${pr ? `Presse : ${ox.W} x ${ox.H} px, pour un journal ou une impression ; le nom du fichier se termine par _presse.` : "Réseaux : la taille recommandée par les réseaux sociaux."} Réglage gardé dans ce navigateur.</p></div>`;
     h += `<div class="actions"><button type="button" class="btn primary" data-act="export">Exporter la photo</button>${navigator.canShare ? `<button type="button" class="btn" data-act="share">Partager...</button>` : ""}</div>`;
+    h += `<div class="sub"><div class="lbl">Déclinaisons</div><p class="hint">La même photo dans plusieurs formats, en une fois : chaque format reprend son dernier cadre réglé (sinon le cadre maximal), les calques suivent. Le nom de chaque fichier se termine par le format (_carre, _story...).</p>`
+      + `<div class="chips">${FORMATS.map(x => { const cur = x.id === c.format; return `<label class="chip ck"><input type="checkbox" data-decl="${x.id}"${cur || S.decl[x.id] ? " checked" : ""}${cur ? " disabled" : ""}>${esc(x.nom)}${cur ? " (courant)" : ""}</label>`; }).join("")}</div>`
+      + `<div class="actions" style="margin-top:10px"><button type="button" class="btn small" data-act="exportDecl">Exporter les déclinaisons</button></div>`
+      + `<p class="hint">${S.dirWritable ? "Les fichiers vont dans publication/ (avec leur texte .txt)." : "Un fichier ZIP est téléchargé (photos, textes .txt et, si la case est cochée plus bas, la fiche)."}</p></div>`;
     h += `<div class="grp"><span class="lbl">Fiche de configuration (pour reprendre l'édition plus tard)</span><div class="actions"><button type="button" class="btn small ghost" data-act="fiche">Exporter la fiche (JSON)</button><label class="btn small ghost" tabindex="0" for="ficheIn">Importer une fiche</label></div><p class="hint">La fiche décrit tout ce qui a été fait sur la photo (format, cadre, couleurs, flous, calques). Avec un dossier de travail ouvert sur ordinateur, elle est enregistrée automatiquement (${esc(p.name)}.esam.json) et reprise à l'ouverture suivante.</p></div>`;
-    h += `<div class="grp"><span class="lbl">Toutes les photos</span><div class="actions"><button type="button" class="btn small ghost" data-act="exportAll">Exporter toutes les photos modifiées</button><button type="button" class="btn small ghost" data-act="ficheAll">Exporter toutes les fiches</button><button type="button" class="btn small ghost" data-act="applyAll"${S.photos.length > 1 ? "" : " disabled"}>Copier les réglages de cette photo vers les autres</button></div><p class="hint">« Copier les réglages » reporte le format, les couleurs, le filtre, le logo, la légende, la date, les animaux et le secteur du nom de fichier, l'auteur et les droits (pas le cadre, ni les flous, ni les flèches, ni la description, ni le code unique).</p></div>`;
+    h += `<div class="grp"><span class="lbl">Toutes les photos</span><div class="actions"><button type="button" class="btn small ghost" data-act="exportAll">Exporter toutes les photos modifiées</button>${S.dirWritable ? `<button type="button" class="btn small ghost" data-act="exportZip">Télécharger un ZIP</button>` : ""}<button type="button" class="btn small ghost" data-act="ficheAll">Exporter toutes les fiches</button><button type="button" class="btn small ghost" data-act="applyAll"${S.photos.length > 1 ? "" : " disabled"}>Copier les réglages de cette photo vers les autres</button></div><label class="ckl"><input type="checkbox" data-zipfiches="1"${S.zipFiches ? " checked" : ""}> Inclure les fiches (.esam.json) dans les ZIP</label><p class="hint">${S.dirWritable ? "Les photos vont dans publication/, avec leur texte (.txt) ; « Télécharger un ZIP » les rassemble en un seul fichier." : `Un seul fichier ZIP (${today().replace(/-/g, "")}_photos-Com-ESAM.zip) : chaque photo, son texte (.txt) et sa fiche.`}</p><p class="hint">« Copier les réglages » reporte le format, les couleurs, le filtre, le logo, la légende, la date, les animaux et le secteur du nom de fichier, l'auteur et les droits (pas le cadre, ni les flous, ni les flèches, ni la description, ni le code unique).</p></div>`;
     h += `<div class="grp"><span class="lbl">Cette photo</span><div class="actions"><button type="button" class="btn small ghost" data-act="reset">Tout réinitialiser</button><button type="button" class="btn small ghost danger" data-act="remove">Retirer de la liste</button></div></div>`;
   }
   box.innerHTML = h;
@@ -2427,7 +2480,7 @@ $("panel").addEventListener("click", e => {
   const p = selected(); if(!p) return;
   const d = b.dataset, c = p.cfg;
   let redraw = true;
-  if(d.fmt){ c.format = d.fmt; c.cadre = null; fixCadre(p); }
+  if(d.fmt){ setFormat(p, d.fmt); }
   else if(d.filtre){ const q = colorTarget(p); q.cfg.filtre = d.filtre; if(q !== p){ q.cache = {}; persist(q); } }
   else if(d.zsel){ S.zsel = d.zsel === S.zsel ? null : d.zsel; S.lasso = false; renderPanel(); draw(); return; }
   else if(d.lsens){ S.lassoSens = d.lsens; renderPanel(); return; }
@@ -2439,6 +2492,7 @@ $("panel").addEventListener("click", e => {
     else sel.teintes = TEINTES.map(t => t[0]).filter(t => t === d.steinte || sel.teintes.indexOf(t) >= 0);
     if(q !== p){ q.cache = {}; persist(q); }
   }
+  else if(d.qual){ S.qualite = d.qual === "presse" ? "presse" : "reseaux"; prefSet("qualite", S.qualite); renderPanel(); return; }
   else if(d.ctarget){ S.csrc = d.ctarget === p.id ? null : d.ctarget; renderPanel(); draw(); return; }
   else if(d.ctab){ S.csrc = d.ctab === p.id ? null : d.ctab; goTab("couleur"); return; }
   else if(d.fsel){ S.fsel = d.fsel; }
@@ -2510,7 +2564,14 @@ $("panel").addEventListener("click", e => {
     else if(a === "share"){ sharePhoto(p); redraw = false; }
     else if(a === "fiche"){ download(new Blob([ficheJson(p)], {type:"application/json"}), `${p.name}.esam.json`); redraw = false; }
     else if(a === "ficheAll"){ download(new Blob([JSON.stringify(S.photos.map(x => x.cfg), noPriv, 1)], {type:"application/json"}), `esam-photos_fiches_${today()}.json`); redraw = false; }
-    else if(a === "exportAll"){ exportAll(); redraw = false; }
+    else if(a === "exportAll" || a === "exportZip"){ exportAll(a === "exportZip"); redraw = false; }
+    else if(a === "exportDecl"){ exportDecl(p); redraw = false; }
+    else if(a === "pubPropose" || a === "altPropose"){
+      c.pub = readPub(c.pub); const k = a === "pubPropose" ? "texte" : "alt", v = a === "pubPropose" ? proposePub(p) : proposeAlt(p);
+      c.pub[k] = v; const el = $("panel").querySelector(`[data-pub="${k}"]`); if(el) el.value = v;
+      persist(p, "pub"); toast("Texte proposé : relisez-le avant de publier."); return;
+    }
+    else if(a === "pubCopy" || a === "altCopy"){ copyField($("panel").querySelector(`[data-pub="${a === "pubCopy" ? "texte" : "alt"}"]`)); return; }
     else if(a === "applyAll"){ applyAll(p); redraw = false; }
     else if(a === "reset"){ p.cfg = newCfg(p.name); fixCadre(p); S.fsel = null; S.csel = null; p.modified = false; delFiche(p.key); }
     else if(a === "remove"){ removePhoto(p); return; }
@@ -2531,7 +2592,12 @@ $("panel").addEventListener("input", e => {
   else if(d.nom){
     c.nom = readNom(c.nom); c.nom[d.nom] = clean(t.value).trim().slice(0, 80); c.nom = readNom(c.nom);
     if(d.nom === "secteur") rememberSecteur(t.value);
-    const el = $("panel").querySelector(".kv b[data-outname]"); if(el) el.textContent = outName(p);
+    const el = $("panel").querySelector(".kv b[data-outname]"); if(el) el.textContent = exportName(p);
+    clearTimeout(S.inputT); S.inputT = setTimeout(() => { S.inputT = 0; persist(p); }, 400);
+    return;
+  }
+  else if(d.pub){
+    c.pub = readPub(c.pub); c.pub[d.pub] = clean(t.value).slice(0, d.pub === "alt" ? ALT_MAX : PUB_MAX);
     clearTimeout(S.inputT); S.inputT = setTimeout(() => { S.inputT = 0; persist(p); }, 400);
     return;
   }
@@ -2585,6 +2651,8 @@ $("panel").addEventListener("input", e => {
 });
 $("panel").addEventListener("change", e => {
   const t = e.target; if(t.dataset && t.dataset.lfield === "secteur"){ rememberSecteur(t.value); }
+  if(t.dataset && t.dataset.decl){ S.decl[t.dataset.decl] = t.checked; return; }
+  if(t.dataset && t.dataset.zipfiches){ S.zipFiches = t.checked; prefSet("zipFiches", t.checked ? "1" : "0"); return; }
   if(t.type === "range") quickOff();   // curseur relâché : rendu en pleine résolution d'aperçu
 });
 /* aperçu allégé pendant le glissement d'un curseur (S.quick, jamais dans la fiche) : la base, les couleurs et les flous sont
@@ -2606,7 +2674,7 @@ function applyAll(p){
   const c = p.cfg;
   S.photos.forEach(x => {
     if(x === p) return;
-    x.cfg.format = c.format; x.cfg.cadre = null; fixCadre(x);
+    setFormat(x, c.format);
     copyColor(x.cfg, c, true);
     x.cfg.meta = Object.assign(readMeta(x.cfg.meta), {auteur:(c.meta || META_DEF).auteur, droits:(c.meta || META_DEF).droits});
     x.cfg.nom = Object.assign(readNom(x.cfg.nom), {date:readNom(c.nom).date, animaux:readNom(c.nom).animaux, secteur:readNom(c.nom).secteur});
@@ -2667,21 +2735,87 @@ async function withMeta(blob, meta){
   }
   return new Blob([b.subarray(0, 2)].concat(head, [new Uint8Array(exifSeg(m)), new Uint8Array(xmpSeg(m))], rest, [b.subarray(i)]), {type:"image/jpeg"});
 }
-async function renderExport(p){
-  await fontsReady();
-  const o = outSize(p), c = mkCanvas(o.W, o.H), ctx = c.getContext("2d");
-  const keep = p.cache; p.cache = {};                      // cache à part pour ne pas écraser celui de l'aperçu
-  try { renderAll(ctx, p, o.W, o.H, o.W, o.H); } finally { p.cache = keep; }
-  return withMeta(await toBlob(c, "image/jpeg", 0.92), p.cfg.meta);
+/* qualité d'export (préférence de l'utilisateur, localStorage, pas dans la fiche) : réseaux (taille du format, JPEG 92 %)
+   ou presse (dimensions doublées, côté long limité à 4096 px, JPEG 97 %, suffixe _presse) */
+const QUALITES = [["reseaux", "Réseaux", "JPEG 92 %, taille du format"], ["presse", "Presse", "JPEG 97 %, dimensions doublées"]];
+const PRESSE_MAX = 4096;
+function prefGet(k, def){ try { const v = localStorage.getItem(`esam-picture:${k}`); return v == null ? def : v; } catch(e){ return def; } }
+function prefSet(k, v){ try { localStorage.setItem(`esam-picture:${k}`, v); } catch(e){} }
+S.qualite = prefGet("qualite", "reseaux") === "presse" ? "presse" : "reseaux";
+S.zipFiches = prefGet("zipFiches", "1") !== "0";   // « Inclure les fiches » dans les ZIP
+S.decl = {};                                         // formats cochés dans « Déclinaisons » (transitoire)
+function presse(){ return S.qualite === "presse"; }
+function exportSize(o, pr){ const k = pr ? Math.min(2, PRESSE_MAX/Math.max(o.W, o.H)) : 1; return {W:Math.round(o.W*k), H:Math.round(o.H*k)}; }
+/* copie de travail de la photo pour un rendu d'export : fiche copiée en profondeur, cache vide ; le format peut être forcé
+   (déclinaisons : cadre du format mémorisé dans cfg.cadres, sinon maximal). La photo elle-même (format, cadre, cache de
+   l'aperçu) n'est pas touchée ; les calques (unités u = W/1080) et les zones en fraction de la source suivent. */
+function exportCopy(p, fmt){
+  const t = Object.assign({}, p, {cfg:JSON.parse(JSON.stringify(p.cfg, noPriv)), cache:{}, hist:null});
+  if(fmt && fmt !== t.cfg.format && FORMATS.some(f => f.id === fmt)) setFormat(t, fmt); else fixCadre(t);
+  return t;
 }
+/* rendu plein format (W x H du format, doublé en qualité presse) dans un cache à part, JPEG avec les métadonnées ESAM */
+async function renderExport(p, fmt){
+  await fontsReady();
+  const t = exportCopy(p, fmt), pr = presse(), o = exportSize(outSize(t), pr), c = mkCanvas(o.W, o.H), ctx = c.getContext("2d");
+  renderAll(ctx, t, o.W, o.H, o.W, o.H);
+  return withMeta(await toBlob(c, "image/jpeg", pr ? 0.97 : 0.92), t.cfg.meta);
+}
+/* nom d'un export : nom courant, suffixe du format (déclinaisons) puis _presse, avant l'extension */
+function exportName(p, fmt){ return outName(p).replace(/\.jpg$/, `${fmt ? `_${fmt}` : ""}${presse() ? "_presse" : ""}.jpg`); }
+function stemOfJpg(n){ return n.replace(/\.jpg$/, ""); }
+/* fichier texte joint à l'export : le texte alternatif, une ligne vide, le texte de publication (rien si les deux sont vides) */
+function pubTxt(p){ const b = readPub(p.cfg.pub); return b.alt || b.texte ? new Blob([`${b.alt}\n\n${b.texte}`], {type:"text/plain;charset=utf-8"}) : null; }
+/* fichiers d'une photo exportée : le JPEG, son texte (.txt) et, au besoin, sa fiche (.esam.json) */
+function photoEntries(p, jpg, name, fiche){
+  const out = [{name:name, blob:jpg}], txt = pubTxt(p);
+  if(txt) out.push({name:`${stemOfJpg(name)}.txt`, blob:txt});
+  if(fiche) out.push({name:`${stemOfJpg(name)}.esam.json`, blob:new Blob([ficheJson(p)], {type:"application/json"})});
+  return out;
+}
+async function writeEntries(entries){ for(const e of entries) await writeInDir(`publication/${e.name}`, e.blob); }
+
+/* ---------- ZIP (méthode « store », sans compression) ----------
+   En-tête local + données pour chaque fichier, puis répertoire central et fin de répertoire. CRC-32 par table, date et
+   heure DOS, noms en UTF-8 (drapeau 0x0800). Les JPEG sont déjà compressés : la compression n'apporterait presque rien. */
+let CRC_T = null;
+function crc32(b){
+  if(!CRC_T){ CRC_T = new Uint32Array(256); for(let n = 0; n < 256; n++){ let c = n; for(let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ c >>> 1 : c >>> 1; CRC_T[n] = c >>> 0; } }
+  let c = 0xFFFFFFFF;
+  for(let i = 0; i < b.length; i++) c = CRC_T[(c ^ b[i]) & 255] ^ c >>> 8;
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function dosDate(d){ return {t:d.getHours() << 11 | d.getMinutes() << 5 | d.getSeconds() >> 1, d:Math.max(0, d.getFullYear() - 1980) << 9 | (d.getMonth() + 1) << 5 | d.getDate()}; }
+/* files : [{name, blob}] -> Promise<Blob> (application/zip) */
+async function zipBlob(files){
+  const enc = new TextEncoder(), dt = dosDate(new Date()), parts = [], central = [];
+  let off = 0, csize = 0;
+  for(const f of files){
+    const name = enc.encode(f.name), data = new Uint8Array(await new Response(f.blob).arrayBuffer()), crc = crc32(data), n = data.length;
+    const h = new DataView(new ArrayBuffer(30)), c = new DataView(new ArrayBuffer(46));
+    h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true); h.setUint16(8, 0, true);
+    h.setUint16(10, dt.t, true); h.setUint16(12, dt.d, true); h.setUint32(14, crc, true); h.setUint32(18, n, true); h.setUint32(22, n, true);
+    h.setUint16(26, name.length, true); h.setUint16(28, 0, true);
+    c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true); c.setUint16(10, 0, true);
+    c.setUint16(12, dt.t, true); c.setUint16(14, dt.d, true); c.setUint32(16, crc, true); c.setUint32(20, n, true); c.setUint32(24, n, true);
+    c.setUint16(28, name.length, true); c.setUint32(42, off, true);   // extra, commentaire, disque, attributs : 0
+    parts.push(h, name, f.blob); central.push(c, name);                // le blob d'origine (pas de copie des données)
+    off += 30 + name.length + n; csize += 46 + name.length;
+  }
+  const e = new DataView(new ArrayBuffer(22));
+  e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true); e.setUint32(12, csize, true); e.setUint32(16, off, true);
+  return new Blob(parts.concat(central, [e]), {type:"application/zip"});
+}
+
 async function exportPhoto(p, silent){
   $("busy").hidden = false;
   try {
-    const blob = await renderExport(p), name = outName(p);
+    const blob = await renderExport(p), name = exportName(p);
     if(S.dirWritable){
-      try { await writeInDir(`publication/${name}`, blob); p.exported = true; if(!silent) toast(`Photo enregistrée : publication/${name}`); }
+      // dossier de travail : la photo et son texte (.txt) dans publication/
+      try { await writeEntries(photoEntries(p, blob, name, false)); p.exported = true; if(!silent) toast(`Photo enregistrée : publication/${name}`); }
       catch(e){ download(blob, name); p.exported = true; if(!silent) toast(`Écriture dans le dossier impossible (${e.message}) : photo téléchargée.`); }
-    } else { download(blob, name); p.exported = true; if(!silent) toast(`Photo téléchargée : ${name}`); }
+    } else { download(blob, name); p.exported = true; if(!silent) toast(`Photo téléchargée : ${name}`); }   // un seul téléchargement : le texte reste à copier
     renderFilm();
   } catch(e){ toast(`Export impossible : ${e.message}`); }
   $("busy").hidden = true;
@@ -2689,18 +2823,91 @@ async function exportPhoto(p, silent){
 async function sharePhoto(p){
   $("busy").hidden = false;
   try {
-    const blob = await renderExport(p), file = new File([blob], outName(p), {type:"image/jpeg"});
+    const blob = await renderExport(p), file = new File([blob], exportName(p), {type:"image/jpeg"}), txt = readPub(p.cfg.pub).texte;
     if(!navigator.canShare || !navigator.canShare({files:[file]})) throw new Error("ce navigateur ne sait pas partager une image");
-    await navigator.share({files:[file], title:"Photo ESAM"}); p.exported = true; renderFilm();
+    await navigator.share(Object.assign({files:[file], title:"Photo ESAM"}, txt ? {text:txt} : {})); p.exported = true; renderFilm();
   } catch(e){ if(e.name !== "AbortError") toast(`Partage impossible : ${e.message}. Utilisez « Exporter la photo ».`); }
   $("busy").hidden = true;
 }
-async function exportAll(){
+/* toutes les photos modifiées : un ZIP téléchargé (JPEG, texte et fiche de chaque photo) ; avec un dossier de travail
+   ouvert en écriture, chaque photo va dans publication/ (zip vrai : le ZIP est téléchargé quand même) */
+async function exportAll(zip){
   const list = S.photos.filter(p => p.modified);
   if(!list.length){ toast("Aucune photo modifiée : réglez au moins une photo, ou exportez-la depuis son onglet Export."); return; }
-  for(let i = 0; i < list.length; i++){ $("busy").textContent = `Export ${i + 1}/${list.length}...`; await exportPhoto(list[i], true); if(!S.dirWritable) await new Promise(r => setTimeout(r, 400)); }
-  $("busy").textContent = "Calcul...";
-  toast(`${list.length} photo(s) exportée(s)${S.dirWritable ? " dans publication/" : ""}.`);
+  if(S.dirWritable && !zip){
+    for(let i = 0; i < list.length; i++){ $("busy").textContent = `Export ${i + 1}/${list.length}...`; await exportPhoto(list[i], true); }
+    $("busy").textContent = "Calcul...";
+    toast(`${list.length} photo(s) exportée(s) dans publication/.`);
+    return;
+  }
+  $("busy").hidden = false;
+  try {
+    let entries = [];
+    for(let i = 0; i < list.length; i++){
+      $("busy").textContent = `Export ${i + 1}/${list.length}...`;
+      const p = list[i];
+      entries = entries.concat(photoEntries(p, await renderExport(p), exportName(p), S.zipFiches));
+    }
+    $("busy").textContent = "ZIP...";
+    const name = `${today().replace(/-/g, "")}_photos-Com-ESAM.zip`;
+    download(await zipBlob(entries), name);
+    list.forEach(p => { p.exported = true; }); renderFilm();
+    toast(`${list.length} photo(s) dans ${name}.`);
+  } catch(e){ toast(`Export impossible : ${e.message}`); }
+  $("busy").textContent = "Calcul..."; $("busy").hidden = true;
+}
+/* déclinaisons : la photo rendue dans chaque format coché (le format courant toujours), nom suffixé du format ;
+   un ZIP téléchargé, ou publication/ si un dossier de travail est ouvert en écriture */
+function declFormats(p){ return FORMATS.filter(f => f.id === p.cfg.format || S.decl[f.id]).map(f => f.id); }
+async function exportDecl(p){
+  const fmts = declFormats(p);
+  if(fmts.length < 2){ toast("Cochez au moins un autre format que le format courant."); return; }
+  $("busy").hidden = false;
+  try {
+    let entries = [];
+    for(let i = 0; i < fmts.length; i++){
+      $("busy").textContent = `Format ${i + 1}/${fmts.length}...`;
+      entries = entries.concat(photoEntries(p, await renderExport(p, fmts[i]), exportName(p, fmts[i]), false));
+    }
+    if(S.dirWritable){
+      try { await writeEntries(entries); p.exported = true; toast(`${fmts.length} formats enregistrés dans publication/.`); renderFilm(); return; }
+      catch(e){ toast(`Écriture dans le dossier impossible (${e.message}) : ZIP téléchargé.`); }
+    }
+    const stem = stemOfJpg(exportName(p));
+    if(S.zipFiches) entries.push({name:`${stem}.esam.json`, blob:new Blob([ficheJson(p)], {type:"application/json"})});
+    $("busy").textContent = "ZIP...";
+    download(await zipBlob(entries), `${stem}_declinaisons.zip`);
+    p.exported = true; renderFilm();
+    toast(`${fmts.length} formats dans ${stem}_declinaisons.zip.`);
+  } catch(e){ toast(`Export impossible : ${e.message}`); }
+  finally { $("busy").textContent = "Calcul..."; $("busy").hidden = true; }
+}
+/* texte de publication et texte alternatif proposés d'après la légende (animal, date en toutes lettres, secteur), le titre
+   et le pied standard ESAM (PUB_PIED) ; repli sur les champs du nom de fichier (onglet Export) */
+const MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
+function dateLettres(iso){ const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || ""); if(!m) return ""; const j = +m[3]; return `${j === 1 ? "1er" : j} ${MOIS[+m[2] - 1] || ""} ${m[1]}`; }
+function pubInfos(p){
+  const l = p.cfg.calques.find(x => x.type === "legende") || {}, n = nomParts(p), t = p.cfg.calques.find(x => x.type === "titre" && clean(x.texte).trim());
+  const animal = clean(l.animal || "").trim() || n.animaux, secteur = clean(l.secteur || "").trim() || n.secteur;
+  const date = dateLettres(/^\d{4}-\d{2}-\d{2}$/.test(l.date || "") ? l.date : n.date);
+  return {animal:animal, secteur:secteur, date:date, titre:t ? clean(t.texte).trim().replace(/\s*\n\s*/g, " ") : "", pl:/,|\s(et|&)\s/i.test(animal)};
+}
+function secoursSuite(x){ return `${x.date ? ` le ${x.date}` : ""}${x.secteur ? ` dans le secteur ${x.secteur}` : ""}`; }
+function proposeAlt(p){
+  const x = pubInfos(p);
+  if(!x.animal && !x.date && !x.secteur) return x.titre ? `Photo ESAM : ${x.titre}`.slice(0, ALT_MAX) : "Photo ESAM : secours animalier en montagne";
+  return `Photo ESAM : ${x.animal ? `${x.animal} secouru${x.pl ? "(e)s" : "(e)"}` : "animal secouru"}${secoursSuite(x)}`.slice(0, ALT_MAX);
+}
+function proposePub(p){
+  const x = pubInfos(p);
+  const phrase = `${x.animal ? `${x.animal} ${x.pl ? "ont" : "a"} été secouru${x.pl ? "(e)s" : "(e)"}` : "Un animal a été secouru"}${secoursSuite(x)} par l'ESAM.`;
+  return [x.titre, phrase, PUB_PIED].filter(Boolean).join("\n\n").slice(0, PUB_MAX);
+}
+/* copie dans le presse-papiers ; repli : le champ est sélectionné pour une copie à la main */
+async function copyField(el){
+  if(!el) return;
+  try { if(!navigator.clipboard || !navigator.clipboard.writeText) throw new Error("presse-papiers indisponible"); await navigator.clipboard.writeText(el.value); toast("Texte copié."); }
+  catch(e){ el.focus(); el.select(); let ok = false; try { ok = document.execCommand("copy"); } catch(err){} toast(ok ? "Texte copié." : "Texte sélectionné : copiez-le (Ctrl+C, ou appui long)."); }
 }
 
 /* ---------- vidéos : extraction d'images ----------

@@ -53,6 +53,36 @@ async function fakeOriented(ctxB, name) {
   const body = [...Buffer.from("Exif\0\0"), ...tiff];
   return { name, mimeType: "image/jpeg", buffer: Buffer.concat([jpg.subarray(0, 2), Buffer.from([0xFF, 0xE1, ...u16(body.length + 2), ...body]), jpg.subarray(2)]) };
 }
+/* lecture d'un ZIP (méthode store) : entrées du répertoire central, données lues à l'en-tête local, CRC-32 vérifié */
+const CRC_T = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ c >>> 1 : c >>> 1; return c >>> 0; });
+const crc32 = b => { let c = 0xFFFFFFFF; for (const x of b) c = CRC_T[(c ^ x) & 255] ^ c >>> 8; return (c ^ 0xFFFFFFFF) >>> 0; };
+function unzip(buf) {
+  const e = buf.length - 22; if (e < 0 || buf.readUInt32LE(e) !== 0x06054b50) return null;
+  const n = buf.readUInt16LE(e + 10), out = [];
+  let i = buf.readUInt32LE(e + 16);
+  for (let k = 0; k < n; k++) {
+    if (buf.readUInt32LE(i) !== 0x02014b50) return null;
+    const flags = buf.readUInt16LE(i + 8), method = buf.readUInt16LE(i + 10), crc = buf.readUInt32LE(i + 16), size = buf.readUInt32LE(i + 20);
+    const nl = buf.readUInt16LE(i + 28), xl = buf.readUInt16LE(i + 30), cl = buf.readUInt16LE(i + 32), off = buf.readUInt32LE(i + 42);
+    const name = buf.subarray(i + 46, i + 46 + nl).toString("utf8"), at = off + 30 + buf.readUInt16LE(off + 26) + buf.readUInt16LE(off + 28);
+    const data = buf.subarray(at, at + size);
+    out.push({ name, data, ok: buf.readUInt32LE(off) === 0x04034b50 && method === 0 && (flags & 0x0800) !== 0 && crc32(data) === crc });
+    i += 46 + nl + xl + cl;
+  }
+  return out;
+}
+/* dimensions d'un JPEG (marqueur SOF) : [largeur, hauteur] */
+function jpgDims(b) {
+  let i = 2;
+  while (i + 9 < b.length) {
+    if (b[i] !== 0xFF) return null;
+    const m = b[i + 1];
+    if (m >= 0xC0 && m <= 0xC3) return [b.readUInt16BE(i + 7), b.readUInt16BE(i + 5)];
+    i += 2 + b.readUInt16BE(i + 2);
+  }
+  return null;
+}
+const near = (a, b) => a && b && ["x", "y", "w", "h"].every(k => Math.abs(a[k] - b[k]) < 1e-6);
 /* lecture brute du magasin « fiches » d'IndexedDB : {clé: {cfg, t}} */
 const idbFiches = pg => pg.evaluate(() => new Promise((res, rej) => {
   const r = indexedDB.open("esam-picture");
@@ -507,6 +537,85 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   check(fz && fz.src === "IMG_portrait.jpg" && fz.forme === "rect" && fz.etiquette === "Zoom", "fiche : zoom incrusté conservé");
   check(fiche.montage.mode === "aucun" && fiche.montage.bandes.length === 2 && fiche.montage.fusion.src === "IMG_portrait.jpg", "fiche : montage conservé (bandes et superposition)");
 
+  // 0.13 : texte de publication et texte alternatif proposés, copiés, enregistrés dans la fiche
+  await ctxB.grantPermissions(["clipboard-read", "clipboard-write"], { origin: base }).catch(() => {});
+  await page.click('[data-act="pubPropose"]'); await page.click('[data-act="altPropose"]');
+  const pubV = await page.inputValue('[data-pub="texte"]'), altV = await page.inputValue('[data-pub="alt"]');
+  check(pubV.includes("Rex") && pubV.includes("Belledonne") && pubV.includes("1er mai 2024") && pubV.includes("Chien secouru en Belledonne") && pubV.includes("Équipe de Secours Animalier en Montagne") && pubV.includes("#ESAM #SecoursAnimalier #Montagne"), `texte de publication proposé (animal, date en lettres, secteur, titre, pied ESAM) : ${JSON.stringify(pubV.slice(0, 120))}`);
+  check(altV === "Photo ESAM : Rex secouru(e) le 1er mai 2024 dans le secteur Belledonne", `texte alternatif proposé : ${altV}`);
+  await page.click('[data-act="pubCopy"]'); await page.waitForTimeout(300);
+  const clip = await page.evaluate(() => navigator.clipboard.readText().catch(() => null));
+  check((await page.textContent("#toast")).includes("copié") && (clip === null || clip === pubV), `bouton Copier : toast de confirmation${clip === null ? "" : ", presse-papiers rempli"}`);
+  await page.waitForTimeout(500);
+  let cfP = await cfgOf();
+  check(cfP.pub && cfP.pub.texte === pubV && cfP.pub.alt === altV, "textes enregistrés dans la fiche (pub.texte, pub.alt)");
+  // place un bloc du panneau juste sous l'aperçu (collant sur téléphone, panneau défilant sur PC) pour la capture
+  const showBlock = sel => page.$eval(sel, el => { const b = el.closest(".sub") || el, pn = document.getElementById("panel"); if (getComputedStyle(pn).overflowY === "auto") b.scrollIntoView({ block: "start" }); else window.scrollBy(0, b.getBoundingClientRect().top - document.querySelector(".left").getBoundingClientRect().bottom - 8); });
+  await page.evaluate(() => { document.getElementById("toast").hidden = true; });
+  await showBlock('[data-pub="texte"]'); await page.waitForTimeout(200);
+  await page.screenshot({ path: path.join(caps, `${label}_export_publication.png`) });
+
+  // Cadres par format : chaque format retrouve son dernier cadre, un format jamais réglé prend le cadre maximal
+  await page.click('[data-tab="cadre"]');
+  let cfC = await cfgOf(); const cPort = cfC.cadre;
+  check(cfC.format === "portrait" && near(cfC.cadres && cfC.cadres.portrait, cPort), "cadre du format portrait mémorisé (cadres.portrait)");
+  await page.click('[data-fmt="carre"]'); await page.waitForTimeout(200);
+  await setRange("input[data-zoom]", 50); await page.waitForTimeout(500);
+  const cCarre = (await cfgOf()).cadre;
+  await page.click('[data-fmt="portrait"]'); await page.waitForTimeout(300);
+  cfC = await cfgOf();
+  check(cfC.format === "portrait" && near(cfC.cadre, cPort) && near(cfC.cadres.carre, cCarre), "cadre portrait retrouvé en revenant au format portrait, cadre carré gardé");
+  await page.click('[data-fmt="carre"]'); await page.waitForTimeout(300);
+  check(near((await cfgOf()).cadre, cCarre), "cadre carré retrouvé en revenant au format carré");
+  const hadLarge = !!(await cfgOf()).cadres.large;
+  await page.click('[data-fmt="large"]'); await page.waitForTimeout(300);
+  cfC = await cfgOf();
+  check(!hadLarge && cfC.cadre.w > 0.999 && Math.abs(cfC.cadre.h - 0.75) < 1e-6, `format jamais réglé : cadre maximal (${cfC.cadre.w.toFixed(3)} x ${cfC.cadre.h.toFixed(3)})`);
+  await page.click('[data-fmt="portrait"]'); await page.waitForTimeout(300);
+
+  // Déclinaisons : format courant verrouillé, story coché en plus, ZIP de deux JPEG aux bonnes dimensions, aperçu intact
+  await page.click('[data-tab="export"]'); await page.waitForTimeout(300);
+  check(await page.isChecked('[data-decl="portrait"]') && await page.isDisabled('[data-decl="portrait"]'), "déclinaisons : format courant coché et verrouillé");
+  await page.check('[data-decl="story"]');
+  await showBlock('[data-act="exportDecl"]'); await page.waitForTimeout(200);
+  await page.screenshot({ path: path.join(caps, `${label}_export_declinaisons.png`) });
+  const shD = await shotCv();
+  const [dld] = await Promise.all([page.waitForEvent("download"), page.click('[data-act="exportDecl"]')]);
+  const stem = "20240501_Rex_Belledonne_photo-Com-ESAM_100000";
+  const zd = unzip(fs.readFileSync(await dld.path())) || [];
+  const zdn = zd.map(e => e.name).sort();
+  check(dld.suggestedFilename() === `${stem}_declinaisons.zip` && JSON.stringify(zdn) === JSON.stringify([`${stem}.esam.json`, `${stem}_portrait.jpg`, `${stem}_portrait.txt`, `${stem}_story.jpg`, `${stem}_story.txt`]) && zd.every(e => e.ok), `déclinaisons : ${dld.suggestedFilename()} (${zdn.join(", ")})`);
+  const dP = jpgDims(zd.find(e => e.name.endsWith("_portrait.jpg")).data), dS = jpgDims(zd.find(e => e.name.endsWith("_story.jpg")).data);
+  fs.writeFileSync(path.join(caps, `${label}_declinaison_story.jpg`), zd.find(e => e.name.endsWith("_story.jpg")).data);   // à regarder : calques et flous dans le format story
+  check(dP && dP.join("x") === "1080x1350" && dS && dS.join("x") === "1080x1920", `déclinaisons aux bonnes dimensions (portrait ${dP && dP.join("x")}, story ${dS && dS.join("x")})`);
+  await page.waitForTimeout(300);
+  check((await cfgOf()).format === "portrait" && (await shotCv()) === shD, "déclinaisons : format de la fiche et aperçu inchangés");
+
+  // ZIP groupé : signature PK, nom daté, JPEG, texte et fiche de chaque photo modifiée
+  const dt = new Date(), ymd = `${dt.getFullYear()}${String(dt.getMonth() + 1).padStart(2, "0")}${String(dt.getDate()).padStart(2, "0")}`;
+  const [dlz] = await Promise.all([page.waitForEvent("download"), page.click('[data-act="exportAll"]')]);
+  const zb = fs.readFileSync(await dlz.path()), ze = unzip(zb) || [];
+  const zen = ze.map(e => e.name);
+  check(zb.subarray(0, 4).equals(Buffer.from([0x50, 0x4B, 3, 4])) && dlz.suggestedFilename() === `${ymd}_photos-Com-ESAM.zip`, `ZIP groupé ${dlz.suggestedFilename()} (signature PK)`);
+  check(ze.length >= 5 && ze.every(e => e.ok) && zen.filter(n => n.endsWith(".jpg")).length === 2 && zen.includes(`${stem}.jpg`) && zen.includes(`${stem}.txt`) && zen.includes(`${stem}.esam.json`), `entrées du ZIP (${zen.join(", ")})`);
+  const zj = jpgDims(ze.find(e => e.name === `${stem}.jpg`).data), zt = ze.find(e => e.name === `${stem}.txt`).data.toString("utf8"), zf = JSON.parse(ze.find(e => e.name === `${stem}.esam.json`).data.toString("utf8"));
+  check(zj && zj.join("x") === "1080x1350", `JPEG extrait du ZIP : ${zj && zj.join("x")}`);
+  check(zt === `${altV}\n\n${pubV}` && zf.format === "portrait" && zf.pub.alt === altV, "texte (.txt : alternatif, ligne vide, publication) et fiche du ZIP");
+  await page.uncheck("[data-zipfiches]");
+  const [dlz2] = await Promise.all([page.waitForEvent("download"), page.click('[data-act="exportAll"]')]);
+  const ze2 = unzip(fs.readFileSync(await dlz2.path())) || [];
+  check(ze2.length && !ze2.some(e => e.name.endsWith(".esam.json")) && (await page.evaluate(() => localStorage.getItem("esam-picture:zipFiches"))) === "0", "« Inclure les fiches » décoché : ZIP sans fiche, préférence gardée");
+  await page.check("[data-zipfiches]");
+
+  // Qualité presse : dimensions doublées, suffixe _presse, préférence gardée
+  await page.click('[data-qual="presse"]'); await page.waitForTimeout(200);
+  check((await page.textContent("#panel")).includes("2160 x 2700") && (await page.textContent("#panel")).includes(`${stem}_presse.jpg`), "qualité presse annoncée (2160 x 2700, _presse)");
+  const [dlp] = await Promise.all([page.waitForEvent("download"), page.click('[data-act="export"]')]);
+  const pb = fs.readFileSync(await dlp.path()), pd = jpgDims(pb);
+  check(dlp.suggestedFilename() === `${stem}_presse.jpg` && pd && pd.join("x") === "2160x2700" && pb.includes("Photos ESAM v"), `export presse ${dlp.suggestedFilename()} (${pd && pd.join("x")})`);
+  check((await page.evaluate(() => localStorage.getItem("esam-picture:qualite"))) === "presse", "qualité gardée dans le navigateur");
+  await page.click('[data-qual="reseaux"]'); await page.waitForTimeout(200);
+
   // Reprise : nouvelle page sans localStorage, chargement de la photo puis de la fiche
   const page2 = await ctxB.newPage();
   await page2.goto(base); await page2.evaluate(() => localStorage.clear());
@@ -520,10 +629,12 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   await page2.click('[data-tab="cadre"]');
   check((await page2.inputValue("input[data-incl]")) === "5", "fiche reprise : horizon redressé de 5°");
   // une fiche ancienne, sans inclinaison, reste lue (0)
-  const ancienne = JSON.parse(fs.readFileSync(fichePath, "utf8")); delete ancienne.inclinaison;
+  const ancienne = JSON.parse(fs.readFileSync(fichePath, "utf8")); delete ancienne.inclinaison; delete ancienne.cadres; delete ancienne.pub;
   await page2.setInputFiles("#ficheIn", [{ name: "DJI_0001.jpg.esam.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(ancienne)) }]);
   await page2.waitForTimeout(500);
   check((await page2.inputValue("input[data-incl]")) === "0", "fiche d'avant 0.12 (sans horizon) : lue avec 0°");
+  const cfA = await page2.evaluate(() => JSON.parse(localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith("esam-picture:DJI")))));
+  check(cfA.format === "portrait" && Object.keys(cfA.cadres).join() === "portrait" && cfA.pub.texte === "" && cfA.pub.alt === "", "fiche d'avant 0.13 (sans cadres ni textes) : lue, seul le cadre courant mémorisé");
   await page2.screenshot({ path: path.join(caps, `${label}_reprise.png`) });
 
   // Vidéo : extraction d'une image
