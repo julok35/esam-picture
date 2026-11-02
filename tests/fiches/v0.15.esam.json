@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "app": "esam-picture",
+  "fichier": "DJI_0001.jpg",
+  "format": "portrait",
+  "cadre": { "x": 0.2, "y": 0, "w": 0.6, "h": 1 },
+  "rotation": 0,
+  "inclinaison": 2,
+  "couleur": { "lum": 0, "contraste": 0, "sat": 0, "temp": 0, "vignette": 0 },
+  "filtre": "aucun",
+  "selectif": { "actif": false, "teintes": ["jaune", "rouge"], "tolerance": 50, "seuil": 35, "renfort": 20, "zones": [] },
+  "flous": [
+    { "id": "f15a", "forme": "ellipse", "mode": "doux", "force": 2, "x": 0.35, "y": 0.45, "w": 0.168, "h": 0.224, "angle": 0 },
+    { "id": "f15b", "forme": "trace", "mode": "pixel", "force": 3, "pts": [[0.6, 0.72], [0.68, 0.73], [0.76, 0.74], [0.84, 0.75]], "ep": 0.1 }
+  ],
+  "calques": [
+    { "id": "c15a", "type": "logo", "x": 0.5, "y": 0.1, "s": 1, "rot": 0, "ex": 1, "ey": 1, "mode": "cartouche" },
+    { "id": "c15b", "type": "legende", "x": 0.5, "y": 0.9, "s": 1, "rot": 0, "ex": 1, "ey": 1, "animal": "Rex", "date": "2024-05-01", "secteur": "Belledonne", "couleur": "#F9DD10" }
+  ],
+  "grille": { "aimant": true, "n": 12 },
+  "montage": { "mode": "aucun", "sens": "v", "sep": 6, "sepCouleur": "#FFFFFF", "bandes": [], "fusion": null },
+  "meta": { "auteur": "ESAM - Équipe de Secours Animalier en Montagne", "droits": "© ESAM - Équipe de Secours Animalier en Montagne", "description": "" },
+  "nom": { "date": "", "animaux": "", "secteur": "", "heure": "" },
+  "cadres": { "portrait": { "x": 0.2, "y": 0, "w": 0.6, "h": 1 } },
+  "pub": { "texte": "", "alt": "" },
+  "carrousel": { "n": 3, "forme": "carre" }
+}

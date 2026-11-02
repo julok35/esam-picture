@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "app": "esam-picture",
+  "fichier": "DJI_0001.jpg",
+  "format": "story",
+  "cadre": { "x": 0.33, "y": 0, "w": 0.42, "h": 1 },
+  "rotation": 0,
+  "couleur": { "lum": 0, "contraste": 0, "sat": 0, "temp": 0, "vignette": 0 },
+  "filtre": "aucun",
+  "flous": [
+    { "id": "f04a", "forme": "rect", "mode": "pixel", "force": 2, "x": 0.5, "y": 0.2, "w": 0.3, "h": 0.05, "angle": 0 }
+  ],
+  "calques": [
+    { "id": "c04a", "type": "logo", "x": 0.5, "y": 0.06, "s": 1, "rot": 0, "mode": "cartouche" },
+    { "id": "c04b", "type": "titre", "x": 0.5, "y": 0.5, "s": 1, "rot": 0, "texte": "Vue large et thermique", "couleur": "#F9DD10", "fond": "contour" }
+  ],
+  "grille": { "aimant": false, "n": 12 },
+  "montage": {
+    "mode": "bandes",
+    "sens": "h",
+    "sep": 8,
+    "sepCouleur": "#F9DD10",
+    "bandes": [
+      { "src": null, "cadre": { "x": 0.1, "y": 0.1, "w": 0.8, "h": 0.6 }, "etiquette": "Vue large" },
+      { "src": "DJI_0001_T.jpg", "cadre": null, "etiquette": "Infrarouge" }
+    ],
+    "fusion": null
+  }
+}

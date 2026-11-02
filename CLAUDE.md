@@ -7,8 +7,8 @@ Projet : préparation des photos d'intervention de l'ESAM (secours animalier en 
 ## Règles à chaque changement
 
 - **Tirets** : jamais de tiret cadratin (U+2014) ni demi-cadratin (U+2013), ni dans le code, ni dans les textes, ni dans les noms de fichiers. Tiret simple uniquement (dans le code, les écrire en échappement (`\u2014` en JavaScript) quand il faut les détecter). Vérifier avant chaque commit :
-  `python3 -c "import sys;[print(f, open(f,encoding='utf-8').read().count(chr(0x2014))+open(f,encoding='utf-8').read().count(chr(0x2013))) for f in sys.argv[1:]]" index.html README.md CLAUDE.md docs/ARCHITECTURE.md`
-- **Version** : à chaque changement livré, incrémenter `APP_VERSION` dans `index.html` et ajouter une ligne au Changelog de `docs/ARCHITECTURE.md` (succincte, orientée utilisateur).
+  `python3 -c "import sys;[print(f, open(f,encoding='utf-8').read().count(chr(0x2014))+open(f,encoding='utf-8').read().count(chr(0x2013))) for f in sys.argv[1:]]" index.html README.md CLAUDE.md docs/ARCHITECTURE.md tests/test_fumee.mjs sw.js manifest.webmanifest`
+- **Version** : à chaque changement livré, incrémenter `APP_VERSION` dans `index.html` **et `VERSION` dans `sw.js`** (même numéro : c'est le changement de `sw.js` qui fait proposer la mise à jour aux appareils qui ont l'appli hors ligne ; le test le vérifie), et ajouter une ligne au Changelog de `docs/ARCHITECTURE.md` (succincte, orientée utilisateur). Un fichier ajouté dont l'appli a besoin hors ligne va aussi dans la liste `FICHIERS` de `sw.js`.
 - **Fiche de configuration** : tout nouveau réglage va dans `cfg` (et donc dans le JSON exporté), avec une valeur par défaut dans `newCfg` ou `defLayer`, et une lecture tolérante dans `applyCfg` (une fiche ancienne doit rester lisible).
 - Même rendu à l'aperçu et à l'export : tout ce qui est dessiné passe par `renderAll` (tailles en unités `u = W/1080`), l'aléa des tracés au crayon est déterministe (`rng(hash(id))`). Pas de `ctx.filter` (absent sur Safari) : les flous se font par réductions successives.
 - Mobile d'abord (téléphone en portrait, gestes au doigt, scène collante), mais la mise en page PC exploite l'écran large (grille `@media (min-width:1100px)`). Respecter la charte ESAM de `index.html` (Anton, Montserrat, couleurs de `:root`).
@@ -22,12 +22,14 @@ Projet : préparation des photos d'intervention de l'ESAM (secours animalier en 
 - Sur téléphone, l'aperçu doit rester visible pendant les réglages : `.left` (scène + onglets) est collant sous l'en-tête, 46 % de la hauteur au plus.
 - Un objet déjà sélectionné garde la main s'il est sous le doigt (sinon on prend l'objet du dessus) : indispensable quand plusieurs calques se superposent au centre.
 - Le cache de rendu (`p.cache.base`, `p.cache.blur`) est par taille : l'export rend dans un cache à part pour ne pas écraser celui de l'aperçu.
+- Hors ligne : `sw.js` sert l'appli depuis son cache (cache d'abord). Pendant le développement, une page déjà visitée garde l'ancien `index.html` : rechargement forcé (Maj + recharger) ou outils du navigateur (Application, Service workers). Le service worker ne doit jamais faire de requête vers un autre domaine, et ne supprime que ses propres caches (`esam-picture-v...`), l'origine `julok35.github.io` étant partagée avec `esam-rush`.
 - Vidéos : le décodage est celui du navigateur ; les `.mov` HEVC d'iPhone ne se lisent pas partout (message à l'utilisateur, pas de conversion).
 
 ## Tester
 
 - `node tests/test_fumee.mjs` après toute modification (Playwright et Chromium nécessaires). Regarder les captures dans `tests/captures/` (390x844 et 1400x900).
 - Vérifier aussi un export réel : flous visibles aux bords fondus, logo et textes nets, dimensions exactes du format.
+- `--only <motif>` n'exécute qu'une partie du test (`pwa`, `fiches`, `reference`, `telephone`...). L'export de référence (`tests/reference/reference.jpg`) doit rester identique : si un changement de rendu est voulu, le régénérer avec `node tests/test_fumee.mjs --only reference --maj-reference`, le regarder, et le commiter avec le changement. Une fiche ajoutée dans `tests/fiches/` doit avoir sa ligne dans `ATTENDUS` du test.
 
 ## Livraison
 

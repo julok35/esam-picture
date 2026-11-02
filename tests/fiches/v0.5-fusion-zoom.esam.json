@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "app": "esam-picture",
+  "fichier": "DJI_0001.jpg",
+  "format": "paysage",
+  "cadre": { "x": 0, "y": 0.1, "w": 1, "h": 0.698 },
+  "rotation": 0,
+  "couleur": { "lum": 5, "contraste": 5, "sat": 0, "temp": -5, "vignette": 10 },
+  "filtre": "froid",
+  "flous": [],
+  "calques": [
+    { "id": "c05a", "type": "zoom", "x": 0.78, "y": 0.7, "s": 1, "rot": 0, "src": null, "zone": { "x": 0.35, "y": 0.45, "w": 0.15 }, "forme": "rect", "ar": 1.4, "couleur": "#F9DD10", "epais": 2, "lien": true, "etiquette": "Zoom" },
+    { "id": "c05b", "type": "zoom", "x": 0.2, "y": 0.7, "s": 0.8, "rot": 0, "src": "DJI_0001_T.jpg", "zone": { "x": 0.5, "y": 0.5, "w": 0.3 }, "forme": "cercle", "couleur": "#FFFFFF", "epais": 1, "lien": false, "etiquette": "Thermique" },
+    { "id": "c05c", "type": "legende", "x": 0.5, "y": 0.92, "s": 0.9, "rot": 0, "animal": "Luna", "date": "2024-07-14", "secteur": "Chartreuse", "couleur": "#FFFFFF" }
+  ],
+  "grille": { "aimant": true, "n": 12 },
+  "montage": {
+    "mode": "fusion",
+    "sens": "v",
+    "sep": 6,
+    "sepCouleur": "#FFFFFF",
+    "bandes": [],
+    "fusion": { "src": "DJI_0001_T.jpg", "x": 0.52, "y": 0.48, "s": 1.05, "rot": 1.5, "op": 60, "mode": "chaleur", "seuil": 55, "fenetre": { "forme": "ellipse", "x": 0.4, "y": 0.5, "w": 0.4, "h": 0.5, "fondu": true, "contour": "#F9DD10" } }
+  },
+  "meta": { "auteur": "ESAM - Équipe de Secours Animalier en Montagne", "droits": "© ESAM", "description": "Chienne retrouvée de nuit à la caméra thermique" }
+}

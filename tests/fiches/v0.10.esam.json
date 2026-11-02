@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "app": "esam-picture",
+  "fichier": "DJI_0001.jpg",
+  "format": "large",
+  "cadre": { "x": 0, "y": 0.08, "w": 1, "h": 0.75 },
+  "rotation": 0,
+  "couleur": { "lum": 4, "contraste": 6, "sat": 0, "temp": 0, "vignette": 0 },
+  "filtre": "aucun",
+  "selectif": {
+    "actif": true,
+    "teintes": ["jaune", "rouge"],
+    "tolerance": 55,
+    "seuil": 30,
+    "renfort": 25,
+    "zones": [
+      { "id": "z10a", "sens": "garder", "pts": [[0.2, 0.3], [0.5, 0.25], [0.55, 0.6], [0.25, 0.65]] },
+      { "id": "z10b", "sens": "exclure", "pts": [[0.6, 0.65], [0.9, 0.65], [0.9, 0.85], [0.6, 0.85], [0.58, 0.75]] }
+    ]
+  },
+  "flous": [
+    { "id": "f10a", "forme": "rect", "mode": "pixel", "force": 2, "x": 0.72, "y": 0.74, "w": 0.26, "h": 0.09, "angle": 0 }
+  ],
+  "calques": [
+    { "id": "c10a", "type": "logo", "x": 0.08, "y": 0.12, "s": 0.9, "rot": 0, "ex": 1, "ey": 1, "mode": "logo" },
+    { "id": "c10b", "type": "legende", "x": 0.5, "y": 0.9, "s": 1, "rot": 0, "ex": 1, "ey": 1, "animal": "Rex et Luna", "date": "2024-05-01", "secteur": "Vercors", "couleur": "#F9DD10" }
+  ],
+  "grille": { "aimant": true, "n": 12 },
+  "montage": { "mode": "aucun", "sens": "v", "sep": 6, "sepCouleur": "#FFFFFF", "bandes": [], "fusion": null },
+  "meta": { "auteur": "ESAM - Équipe de Secours Animalier en Montagne", "droits": "© ESAM - Équipe de Secours Animalier en Montagne", "description": "" },
+  "nom": { "date": "2024-05-01", "animaux": "Rex et Luna", "secteur": "Vercors", "heure": "101530" }
+}

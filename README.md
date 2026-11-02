@@ -1,13 +1,14 @@
 # esam-picture : photos ESAM pour les réseaux sociaux
 
-**Appli en ligne : https://julok35.github.io/esam-picture/** (à ouvrir sur téléphone ou PC, rien à installer).
+**Appli en ligne : https://julok35.github.io/esam-picture/** (à ouvrir sur téléphone ou PC, rien à installer ; on peut aussi l'installer pour l'avoir sur l'écran d'accueil et s'en servir sans réseau).
 
 Appli web très simple pour préparer les photos d'une intervention avant publication sur Facebook, Instagram et LinkedIn.
 
 Outil de l'ESAM (Equipe de Secours Animalier en Montagne), dans la lignée de [esam-rush](https://github.com/julok35/esam-rush) (dérushage drone) : même charte, même principe (un seul fichier, tout se passe dans l'appareil, rien n'est envoyé sur Internet).
 
 - **En ligne** : https://julok35.github.io/esam-picture/ (publié par GitHub Pages depuis `main`).
-- **Hors ligne** : ouvrir `index.html` via un petit serveur local (`python -m http.server`) ; les polices sont embarquées dans `vendor/`.
+- **Hors ligne** : une fois l'appli ouverte une première fois avec du réseau, elle se rouvre et fonctionne sans réseau (en montagne, en zone blanche) : le navigateur en garde une copie (service worker `sw.js`). Quand une nouvelle version est publiée, un bouton « Nouvelle version disponible : recharger » la propose ; rien ne change sans ce clic. Sans Internet du tout, on peut aussi ouvrir `index.html` via un petit serveur local (`python -m http.server`) ; les polices sont embarquées dans `vendor/`.
+- **Installer sur téléphone** : sur Android (Chrome) ou sur ordinateur (Chrome, Edge), bouton « Installer l'appli » de l'accueil (ou menu du navigateur, « Installer l'application ») ; sur iPhone et iPad (Safari) : bouton Partager puis « Sur l'écran d'accueil ». L'appli s'ouvre alors en plein écran avec l'icône ESAM, comme une appli ordinaire, et rien n'est envoyé sur Internet.
 
 ## Ce que fait l'appli
 
@@ -32,9 +33,14 @@ Le travail en cours est aussi gardé dans le navigateur (IndexedDB, avec une cop
 | Fichier | Rôle |
 |---|---|
 | `index.html` | L'appli (un seul fichier, sans étape de construction) |
+| `manifest.webmanifest` | Description de l'appli installable (nom, icônes, couleurs, plein écran) |
+| `sw.js` | Service worker : copie de l'appli pour l'ouvrir hors ligne (cache versionné, même numéro que l'appli) |
+| `icons/` | Icônes de l'appli installée (192 et 512 px, et une version « maskable » pour Android) |
 | `vendor/` | Polices Anton et Montserrat embarquées (licence OFL) |
 | `docs/ARCHITECTURE.md` | Documentation technique : modèle de données, pipeline de rendu, conventions, tests |
 | `tests/test_fumee.mjs` | Test de bout en bout (Playwright, Chromium) avec captures d'écran dans `tests/captures/` |
+| `tests/fiches/` | Fiches de configuration des versions précédentes (une par version marquante) et fiche de l'export de référence |
+| `tests/reference/` | Export JPEG de référence, comparé à chaque exécution du test |
 | `CLAUDE.md` | Consignes pour Claude Code |
 
 ## Tester
@@ -43,6 +49,16 @@ Le travail en cours est aussi gardé dans le navigateur (IndexedDB, avec une cop
 node tests/test_fumee.mjs
 ```
 
-Playwright et Chromium doivent être installés (`npm i -g playwright && npx playwright install chromium`). Le test sert le dossier, fabrique des photos et une vidéo, exerce chaque onglet, exporte une photo et une fiche, un ZIP groupé, des déclinaisons, une photo en qualité presse et un carrousel (ZIP relus, dimensions et continuité vérifiées), exerce les modèles et l'avant / après, les visages (détecteur simulé), le pinceau et la rafale vidéo, puis vérifie la reprise de la fiche et l'extraction d'une image de vidéo, en 390x844 (téléphone) et 1400x900 (PC).
+Playwright et Chromium doivent être installés (`npm i -g playwright && npx playwright install chromium`). Le test sert le dossier, fabrique des photos et une vidéo, exerce chaque onglet, exporte une photo et une fiche, un ZIP groupé, des déclinaisons, une photo en qualité presse et un carrousel (ZIP relus, dimensions et continuité vérifiées), exerce les modèles et l'avant / après, les visages (détecteur simulé), le pinceau et la rafale vidéo, puis vérifie la reprise de la fiche et l'extraction d'une image de vidéo, en 390x844 (téléphone) et 1400x900 (PC). Il vérifie aussi l'appli installable et hors ligne (manifest, icônes, service worker, rechargement réseau coupé, proposition de mise à jour), les étiquettes de l'aperçu sur téléphone, la lecture de chaque fiche de `tests/fiches/` (anciennes versions comprises) et l'export de référence.
+
+Options :
+
+```bash
+node tests/test_fumee.mjs --only pwa          # seulement les sections dont le nom contient « pwa »
+node tests/test_fumee.mjs --only fiches       # autres sections : telephone, pc, indexeddb, etiquettes, reference
+node tests/test_fumee.mjs --only reference --maj-reference   # régénère l'export de référence
+```
+
+L'export de référence (`tests/reference/reference.jpg`) est la fiche `tests/fiches/reference.esam.json` appliquée à une photo fabriquée par le test ; un export qui s'en écarte (différence moyenne de 2 sur 255 ou plus, ou plus de 0,5 % de pixels très différents) fait échouer le test, l'export du jour étant gardé dans `tests/captures/pc_export_reference.jpg` pour comparer. Quand le changement de rendu est voulu, régénérer la référence avec `--maj-reference`, regarder l'image, et la commiter avec le changement.
 
 Licence MIT, voir `LICENSE`.

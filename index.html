@@ -5,6 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#A8C8FB">
 <title>Photos ESAM</title>
+<!-- appli installable et hors ligne : manifest, icônes (icons/), service worker sw.js enregistré au démarrage -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Photos ESAM">
 <style>
 /* Polices embarquées (vendor/, licence OFL) : l'appli fonctionne sans Internet. */
 @font-face{font-family:Anton;font-style:normal;font-weight:400;font-display:swap;src:local("Anton"),local("Anton-Regular"),url(vendor/anton-latin.woff2) format("woff2")}
@@ -110,6 +117,12 @@ input[type=range]:focus-visible{outline:none}
 .empty ul{padding-left:18px;margin:0 0 16px;font-size:14px}
 .empty ul li{margin:4px 0}
 .progress{margin-top:16px;font-weight:600}
+.empty .install{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:-6px 0 16px}
+.empty .install .hint{margin:0}
+/* nouvelle version de l'appli prête (service worker en attente) : bouton en forme de toast, en bas, qui reste jusqu'au clic ;
+   les toasts ordinaires passent alors au-dessus de lui */
+.toast.maj{width:max-content;border:2px solid var(--yellow);cursor:pointer;font:inherit;font-weight:700;font-size:14px;text-align:center}
+.toast.maj:not([hidden])~.toast{bottom:calc(76px + env(safe-area-inset-bottom,0px))}
 
 /* ---------- pellicule (vignettes) ---------- */
 .film{display:flex;gap:8px;overflow-x:auto;padding:8px 10px;border-bottom:1px solid var(--line);scrollbar-width:thin;scroll-snap-type:x proximity}
@@ -136,8 +149,10 @@ input[type=range]:focus-visible{outline:none}
 .left{position:sticky;top:calc(env(safe-area-inset-top,0px) + var(--top));z-index:12;background:var(--bg)}
 .stage{position:relative;background:#101012;display:flex;align-items:center;justify-content:center;touch-action:none;user-select:none;-webkit-user-select:none;max-height:46vh;min-height:160px}
 .stage canvas{display:block;max-width:100%;max-height:46vh}
-.stage .tag{position:absolute;left:8px;top:8px;background:rgba(23,22,24,.72);color:#fff;font-size:12px;font-weight:700;padding:3px 8px;border-radius:6px;pointer-events:none}
-.stage .tag.r{left:auto;right:8px}
+.stage .tag{position:absolute;left:8px;top:8px;background:rgba(23,22,24,.72);color:#fff;font-size:12px;font-weight:700;line-height:1.35;padding:3px 8px;border-radius:6px;pointer-events:none;max-width:calc(50% - 12px)}
+.stage .tag.r{left:auto;right:8px;text-align:right}
+/* téléphone : étiquettes plus petites, dimensions sous le nom du format, consigne sur deux lignes (sans chevauchement) */
+@media (max-width:599px){.stage .tag{font-size:11px;padding:2px 6px}.stage .tag .sep{display:none}.stage .tag .dim{display:block;font-weight:600;opacity:.85}}
 .stage .orig{position:absolute;right:8px;bottom:8px;z-index:2;background:rgba(23,22,24,.72);color:#fff;border:1.5px solid rgba(255,255,255,.65);border-radius:16px;padding:4px 12px;font-size:12px;font-weight:700;min-height:32px;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 .stage .orig[aria-pressed="true"]{background:var(--yellow);color:#171618;border-color:#171618}
 .stage .busy{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;background:rgba(0,0,0,.35);pointer-events:none}
@@ -250,6 +265,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
     <label class="btn ghost" tabindex="0">Importer une fiche de configuration<input type="file" id="ficheIn" accept=".json,application/json" multiple></label>
   </div>
   <p class="hint" id="dirHint" hidden>Avec un dossier de travail ouvert dans Chrome ou Edge sur ordinateur, la configuration de chaque photo est enregistrée à côté d'elle (fichier .esam.json) et les photos exportées vont dans le sous-dossier « publication ».</p>
+  <div class="install"><button type="button" class="btn small" id="installBtn" hidden>Installer l'appli</button><p class="hint" id="iosHint" hidden>Sur iPhone : Partager puis Sur l'écran d'accueil.</p></div>
   <p class="hint">Sur téléphone, « Choisir des photos ou vidéos » ouvre la galerie. Le travail en cours est gardé dans le navigateur ; la fiche de configuration de chaque photo peut être exportée pour reprendre plus tard sur un autre appareil.</p>
   <div class="progress" id="prog" hidden></div>
 </section>
@@ -311,6 +327,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 </dialog>
 <input type="file" id="dirIn" webkitdirectory multiple>
 <input type="file" id="modeleIn" accept=".json,application/json" multiple>
+<button type="button" class="toast maj" id="majBtn" hidden>Nouvelle version disponible : recharger</button>
 <div class="toast" id="toast" hidden role="status"></div>
 <img id="logoImg" alt="" hidden>
 
@@ -320,7 +337,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 /* Photos ESAM : préparation d'images pour les réseaux sociaux. Un seul fichier, pas de build, ES2017.
    Sections : utils, modèle, formats, chargement, dossier de travail, rendu (base, couleur, flous, calques),
    aperçu et interactions, panneaux, export, démarrage. Voir docs/ARCHITECTURE.md. */
-const APP_VERSION = "0.15";
+const APP_VERSION = "0.16";   // à garder égale à VERSION de sw.js (vérifié par le test)
 /* pied standard du texte de publication proposé (onglet Export, bouton « Proposer ») : à modifier ici */
 const PUB_PIED = "Équipe de Secours Animalier en Montagne\n#ESAM #SecoursAnimalier #Montagne";
 const $ = id => document.getElementById(id);
@@ -650,10 +667,11 @@ function readFlou(z){
 }
 /* calques d'une fiche ou d'un modèle : seuls les types connus sont gardés, chaque champ est borné (copie, jamais la liste reçue) */
 function readCalques(list){
-  const out = (Array.isArray(list) ? list : []).filter(l => l && typeof l === "object" && TYPES[l.type]).map(l => Object.assign(defLayer(l.type), l.type === "texte" && l.larg == null ? {larg:0.9} : {}, JSON.parse(JSON.stringify(l, noPriv)), {id:typeof l.id === "string" && l.id ? l.id : uid(), x:clamp(+l.x || 0.5, -0.2, 1.2), y:clamp(+l.y || 0.5, -0.2, 1.2), s:clamp(+l.s || 1, 0.2, 5), rot:+l.rot || 0, ex:clamp(+l.ex || 1, 0.2, 5), ey:clamp(+l.ey || 1, 0.2, 5)}));
+  const out = (Array.isArray(list) ? list : []).filter(l => l && typeof l === "object" && TYPES[l.type]).map(l => Object.assign(defLayer(l.type), l.type === "texte" && l.larg == null ? {larg:0.9} : {}, JSON.parse(JSON.stringify(l, noPriv)), {id:typeof l.id === "string" && l.id ? l.id : uid(), x:clamp(+l.x || 0.5, -0.2, 1.2), y:clamp(+l.y || 0.5, -0.2, 1.2), s:clamp(+l.s || 1, 0.2, 5), rot:+l.rot || 0, ex:clamp(+l.ex || 1, 0.2, 5), ey:clamp(+l.ey || 1, 0.2, 5)}, l.type === "zoom" && l.hr == null ? {_avant07:true} : {}));
   out.forEach(l => { if(l.hr != null) l.hr = clamp(+l.hr || 1, 0.3, 3); });
   out.filter(l => l.type === "zoom").forEach(l => {
-    const z = l.zone && typeof l.zone === "object" ? l.zone : {}, old = l.hr == null;   // fiche d'avant 0.7 : la loupe ronde ignorait ar, le rectangle faisait 420 x 420 unités
+    // fiche d'avant 0.7 (loupe sans hr, repérée avant les valeurs par défaut de defLayer) : la loupe ronde ignorait ar, le rectangle faisait 420 x 420 unités
+    const z = l.zone && typeof l.zone === "object" ? l.zone : {}, old = !!l._avant07; delete l._avant07;
     l.src = typeof l.src === "string" && l.src ? clean(l.src) : null; l.zone = {x:clamp(+z.x || 0.5, 0, 1), y:clamp(+z.y || 0.5, 0, 1), w:clamp(+z.w || 0.18, 0.02, 1)};
     l.forme = l.forme === "rect" ? "rect" : "cercle"; l.ar = clamp(old ? (l.forme === "rect" ? (+l.ar || 1.4)*420/560 : 1) : +l.ar || 1, 0.3, 3); l.hr = clamp(old ? (l.forme === "rect" ? 420/400 : 1) : +l.hr || 1, 0.3, 3); l.epais = clamp(Math.round(+l.epais) || 2, 0, 3); l.lien = l.lien !== false; l.etiquette = clean(l.etiquette || "").slice(0, 40);
   });
@@ -1833,13 +1851,19 @@ function drawBox(ctx, b, withRot, withWid, withHgt){
   if(withHgt) dot(ctx, 0, b.hh, r*0.7, "#FFFFFF");
   ctx.restore();
 }
+/* étiquettes de la scène : format et dimensions à gauche (sur téléphone, dimensions sous le nom : voir le CSS de .tag),
+   consigne à droite (masquée si vide) ; le texte complet reste « nom · W x H » */
+function setTags(nom, o, mode){
+  $("tagFmt").innerHTML = `<span class="nm">${esc(nom)}</span><span class="sep"> · </span><span class="dim">${o.W} x ${o.H}</span>`;
+  const m = $("tagMode"); m.textContent = mode || ""; m.hidden = !mode;
+}
 function drawOutView(p){
   const o = outSize(p); layoutCanvas(o.W, o.H);
   const ctx = cx2; ctx.setTransform(V.k, 0, 0, V.k, 0, 0); V.space = "out";
   if(S.original){
     // avant / après : la photo telle qu'elle est (cadre et rotation seulement), sans poignées ni étiquettes de montage
     ctx.drawImage(origCanvas(p, cv.width, cv.height), 0, 0, cv.width, cv.height, 0, 0, o.W, o.H);
-    $("tagFmt").textContent = `${fmtOf(p.cfg).nom} · ${o.W} x ${o.H}`; $("tagMode").textContent = "Original";
+    setTags(fmtOf(p.cfg).nom, o, "Original");
     return;
   }
   const vue = S.tab === "montage" && montMode(p) === "fusion" && S.mview !== "deux" ? S.mview : null;   // vue d'aperçu, jamais dans la fiche ni l'export
@@ -1933,8 +1957,7 @@ function drawOutView(p){
   }
   const fo = fmtOf(p.cfg);
   if(fo.n && ((S.tab === "export" && S.carrousel) || S.tab === "calques")) drawCuts(ctx, fo.n, {x:0, y:0, w:o.W, h:o.H}, S.tab === "export");
-  $("tagFmt").textContent = `${fo.nom} · ${o.W} x ${o.H}`;
-  $("tagMode").textContent = S.tab === "flous" ? (S.pinceau ? "Peignez sur ce qu'il faut flouter" : "Flous") : S.tab === "calques" ? "Calques" : S.tab === "montage" ? "Montage" : S.tab === "couleur" && S.lasso ? "Tracez au doigt autour de la zone" : "";
+  setTags(fo.nom, o, S.tab === "flous" ? (S.pinceau ? "Peignez sur ce qu'il faut flouter" : "Flous") : S.tab === "calques" ? "Calques" : S.tab === "montage" ? "Montage" : S.tab === "couleur" && S.lasso ? "Tracez au doigt autour de la zone" : "");
 }
 /* carrousel : lignes de coupe en pointillé entre les n diapositives d'un rectangle r (espace de la vue), numéros au besoin ;
    aperçu seulement (S.carrousel, onglets Calques et Cadre), jamais dans l'export */
@@ -2032,8 +2055,7 @@ function drawCropView(p){
   const r = handleR();
   [[c.x, c.y], [c.x + c.w, c.y], [c.x, c.y + c.h], [c.x + c.w, c.y + c.h]].forEach(q => dot(ctx, q[0], q[1], r*0.8, "#F9DD10"));
   const o = outSize(p);
-  $("tagFmt").textContent = `${fc.nom} · ${o.W} x ${o.H}`;
-  $("tagMode").textContent = fc.w ? "Glissez le cadre, pincez ou tirez un coin" : "Format original : pas de recadrage";
+  setTags(fc.nom, o, fc.w ? "Glissez le cadre, pincez ou tirez un coin" : "Format original : pas de recadrage");
 }
 
 /* ---------- interactions sur l'aperçu ----------
@@ -3531,8 +3553,47 @@ vd.addEventListener("click", async e => {
 });
 vd.addEventListener("cancel", e => { e.preventDefault(); vd.querySelector('[data-vact="close"]').click(); });
 
+/* ---------- hors ligne et installation (PWA) ----------
+   sw.js (cache « esam-picture-v<version> », même version que APP_VERSION) garde l'appli pour l'ouvrir sans réseau.
+   Enregistrement silencieux : refusé en file:// ou sur un serveur http non sécurisé, l'appli marche comme avant.
+   Mise à jour : un nouveau sw installé attend ; le bouton « Nouvelle version disponible : recharger » lui demande de
+   prendre la main (skipWaiting), puis la page se recharge au changement de contrôleur, jamais sans action. */
+function swInit(){
+  let sw = null, reload = false;
+  try { sw = "serviceWorker" in navigator ? navigator.serviceWorker : null; } catch(e){ return; }
+  if(!sw || !window.isSecureContext) return;
+  const maj = $("majBtn");
+  const offer = w => { maj.hidden = false; maj.onclick = () => { reload = true; maj.disabled = true; w.postMessage({type:"skipWaiting"}); }; };
+  sw.addEventListener("controllerchange", () => { if(reload){ reload = false; location.reload(); } });
+  sw.register("./sw.js").then(reg => {
+    if(reg.waiting && sw.controller) offer(reg.waiting);
+    reg.addEventListener("updatefound", () => {
+      const w = reg.installing; if(!w) return;
+      w.addEventListener("statechange", () => { if(w.state === "installed" && sw.controller) offer(w); });
+    });
+  }).catch(() => {});
+}
+/* installation : bouton de l'accueil quand le navigateur la propose (beforeinstallprompt : Chrome, Edge, Android),
+   phrase d'aide sur iPhone et iPad dans Safari (pas d'invite) ; rien une fois l'appli installée */
+function standalone(){ return !!((window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true); }
+function installInit(){
+  let evt = null;
+  const btn = $("installBtn"), ua = navigator.userAgent || "";
+  const ios = /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  $("iosHint").hidden = !(ios && /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|GSA\//.test(ua) && !standalone());
+  window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); evt = e; btn.hidden = standalone(); });
+  window.addEventListener("appinstalled", () => { evt = null; btn.hidden = true; $("iosHint").hidden = true; });
+  btn.addEventListener("click", () => {
+    if(!evt) return;
+    const e = evt; evt = null; btn.hidden = true;
+    Promise.resolve(e.prompt()).then(() => e.userChoice).then(r => { if(r && r.outcome === "accepted") toast("Appli installée : elle s'ouvre aussi sans réseau."); }).catch(() => {});
+  });
+}
+
 /* ---------- démarrage ---------- */
 $("verBadge").textContent = `v${APP_VERSION}`;
+swInit();
+installInit();
 fichesReady();                                                     // purge et reprise des fiches gardées dans le navigateur
 $("logoImg").src = document.querySelector(".top .logo").src;      // une seule copie du logo dans la page
 $("logoImg").onload = () => { draw(); };

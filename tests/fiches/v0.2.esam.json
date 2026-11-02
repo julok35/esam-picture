@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "app": "esam-picture",
+  "fichier": "DJI_0001.jpg",
+  "format": "carre",
+  "cadre": { "x": 0.15, "y": 0, "w": 0.75, "h": 1 },
+  "rotation": 0,
+  "couleur": { "lum": 0, "contraste": 10, "sat": 5, "temp": 0, "vignette": 0 },
+  "filtre": "esam",
+  "flous": [
+    { "id": "f02a", "forme": "ellipse", "mode": "dynamique", "force": 1, "x": 0.35, "y": 0.45, "w": 0.15, "h": 0.2, "angle": 20 }
+  ],
+  "calques": [
+    { "id": "c02a", "type": "logo", "x": 0.15, "y": 0.12, "s": 0.8, "rot": 0, "mode": "logo" },
+    { "id": "c02b", "type": "texte", "x": 0.5, "y": 0.5, "s": 1, "rot": 0, "texte": "Deux heures d'approche à pied", "couleur": "#171618", "fond": "boite", "larg": 0.6 },
+    { "id": "c02c", "type": "signature", "x": 0.36, "y": 0.93, "s": 1, "rot": 0, "texte": "Équipe de Secours Animalier en Montagne", "couleur": "#171618" },
+    { "id": "c02d", "type": "montagne", "x": 0.71, "y": 0.85, "s": 1, "rot": 0, "couleur": "#A8C8FB", "ar": 1, "op": 80, "miroir": false },
+    { "id": "c02e", "type": "biais", "x": 0.12, "y": 0.13, "s": 1, "rot": 0, "couleur": "#F9DD10", "ar": 1.2, "op": 100, "miroir": true },
+    { "id": "c02f", "type": "coin", "x": 0.9, "y": 0.9, "s": 1, "rot": 0, "couleur": "#171618", "coin": "hd" },
+    { "id": "c02g", "type": "carte", "x": 0.75, "y": 0.2, "s": 1, "rot": 0, "texte": "Drone", "couleur": "#E20C0F", "style": "barre" }
+  ],
+  "grille": { "aimant": true, "n": 24 }
+}

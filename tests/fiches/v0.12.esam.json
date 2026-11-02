@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "app": "esam-picture",
+  "fichier": "DJI_0001.jpg",
+  "format": "carre",
+  "cadre": { "x": 0.2, "y": 0.05, "w": 0.6, "h": 0.8 },
+  "rotation": 0,
+  "inclinaison": -4.5,
+  "couleur": { "lum": 0, "contraste": 0, "sat": 0, "temp": 0, "vignette": 0 },
+  "filtre": "doux",
+  "selectif": { "actif": false, "teintes": ["jaune", "rouge"], "tolerance": 50, "seuil": 35, "renfort": 20, "zones": [] },
+  "flous": [
+    { "id": "f12a", "forme": "ellipse", "mode": "doux", "force": 2, "x": 0.35, "y": 0.45, "w": 0.16, "h": 0.22, "angle": 0 }
+  ],
+  "calques": [
+    { "id": "c12a", "type": "zoom", "x": 0.75, "y": 0.75, "s": 1, "rot": 0, "ex": 1, "ey": 1, "src": null, "zone": { "x": 0.7, "y": 0.75, "w": 0.2 }, "forme": "cercle", "ar": 1, "hr": 1, "couleur": "#F9DD10", "epais": 2, "lien": true, "etiquette": "Plaque" }
+  ],
+  "grille": { "aimant": true, "n": 12 },
+  "montage": { "mode": "aucun", "sens": "v", "sep": 6, "sepCouleur": "#FFFFFF", "bandes": [], "fusion": null },
+  "meta": { "auteur": "ESAM - Équipe de Secours Animalier en Montagne", "droits": "© ESAM - Équipe de Secours Animalier en Montagne", "description": "" },
+  "nom": { "date": "", "animaux": "", "secteur": "", "heure": "" }
+}

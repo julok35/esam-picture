@@ -1,6 +1,11 @@
 /* Test de fumée (Playwright, Chromium) : sert le dossier, charge des photos fabriquées, exerce chaque onglet,
    exporte une photo et une fiche, puis vérifie la reprise d'une fiche. Captures d'écran dans tests/captures/.
-   Lancer : node tests/test_fumee.mjs   (Chromium et Playwright doivent être installés : npx playwright install chromium) */
+   Lancer : node tests/test_fumee.mjs   (Chromium et Playwright doivent être installés : npx playwright install chromium)
+   Options :
+     --only <motif>     n'exécute que les sections dont le nom contient le motif (sans tenir compte des accents ni de la
+                        casse), par exemple --only pwa, --only fiches, --only reference, --only telephone ; variable ONLY
+     --maj-reference    régénère tests/reference/reference.jpg (export de référence) au lieu de le comparer, quand un
+                        changement de rendu est voulu ; variable MAJ_REFERENCE=1 */
 import { createRequire } from "node:module";
 import http from "node:http";
 import fs from "node:fs";
@@ -11,8 +16,13 @@ const { chromium } = createRequire(import.meta.url)("playwright");   // require 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const caps = path.join(root, "tests", "captures");
 fs.mkdirSync(caps, { recursive: true });
-const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".woff2": "font/woff2", ".json": "application/json", ".jpg": "image/jpeg" };
+const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".woff2": "font/woff2", ".json": "application/json", ".jpg": "image/jpeg", ".png": "image/png", ".webmanifest": "application/manifest+json" };
+let swOverride = null;   // section PWA : sw.js servi avec une autre version, pour simuler une mise à jour publiée
 const server = http.createServer((req, res) => {
+  if (swOverride && req.url.split("?")[0] === "/sw.js") {
+    res.writeHead(200, { "content-type": "text/javascript" });
+    res.end(fs.readFileSync(path.join(root, "sw.js"), "utf8").replace(/const VERSION = "[^"]+"/, `const VERSION = "${swOverride}"`)); return;
+  }
   const f = path.join(root, decodeURIComponent(req.url.split("?")[0]).replace(/^\/+/, "") || "index.html");
   if (!f.startsWith(root) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { res.writeHead(404); res.end(); return; }
   res.writeHead(200, { "content-type": MIME[path.extname(f)] || "application/octet-stream" }); fs.createReadStream(f).pipe(res);
@@ -22,6 +32,20 @@ const base = `http://127.0.0.1:${server.address().port}/`;
 
 let failures = 0;
 function check(cond, msg) { if (cond) console.log(`  ok   ${msg}`); else { failures++; console.log(`  ECHEC ${msg}`); } }
+/* options de la ligne de commande (voir l'en-tête) */
+const args = process.argv.slice(2), oi = args.indexOf("--only");
+const only = oi >= 0 ? args[oi + 1] || "" : process.env.ONLY || "";
+const MAJ_REF = args.includes("--maj-reference") || !!process.env.MAJ_REFERENCE;
+const norm = s => String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+let nSections = 0;
+/* une section du test : ignorée si --only ne la désigne pas ; une exception y compte comme un échec sans arrêter les suivantes */
+async function section(nom, fn) {
+  if (only && !norm(nom).includes(norm(only))) return;
+  nSections++;
+  console.log(`\n== ${nom}`);
+  try { await fn(); } catch (e) { failures++; console.log(`  ECHEC section interrompue par une exception : ${(e && e.stack || String(e)).split("\n").slice(0, 4).join(" | ")}`); }
+}
+const APP_VER = (/const APP_VERSION = "([^"]+)"/.exec(fs.readFileSync(path.join(root, "index.html"), "utf8")) || [])[1];
 
 const browser = await chromium.launch();
 /* fabrique une photo JPEG (paysage ou portrait) avec des repères colorés, dans un onglet à part */
@@ -109,8 +133,7 @@ function fakeExif() {
   return Buffer.from([0xFF, 0xE1, ...u16(body.length + 2), ...body]);
 }
 
-for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { width: 1400, height: 900 }]]) {
-  console.log(`\n== ${label} ${vp.width}x${vp.height}`);
+for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { width: 1400, height: 900 }]]) await section(`${label} ${vp.width}x${vp.height}`, async () => {
   const ctxB = await browser.newContext({ viewport: vp, deviceScaleFactor: 2, hasTouch: label === "telephone" });
   const page = await ctxB.newPage();
   const errors = [];
@@ -1038,10 +1061,9 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
 
   check(errors.length === 0, `aucune erreur de page (${errors.join(" | ").slice(0, 300)})`);
   await ctxB.close();
-}
+});
 // Base IndexedDB de la version 1 (dossier de travail seul) : le passage en version 2 garde le dossier et ajoute les fiches
-{
-  console.log("\n== base IndexedDB d'avant 0.12");
+await section("base IndexedDB d'avant 0.12", async () => {
   const ctxU = await browser.newContext({ viewport: { width: 1400, height: 900 } });
   await ctxU.addInitScript(() => {
     if (location.pathname !== "/" || sessionStorage.getItem("v1")) return;
@@ -1057,7 +1079,228 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   check(st.v === 2 && st.stores.includes("kv") && st.stores.includes("fiches") && st.dossier === "Dossier test", `base passée en version ${st.v} (${st.stores.join(", ")}), dossier de travail conservé`);
   check(errs.length === 0, `aucune erreur de page (${errs.join(" | ").slice(0, 300)})`);
   await ctxU.close();
-}
+});
+/* 0.16 : appli installable et hors ligne (manifest, icônes, service worker, cache versionné, mise à jour, installation) */
+const pngDims = b => b.length > 24 && b.readUInt32BE(0) === 0x89504E47 ? [b.readUInt32BE(16), b.readUInt32BE(20)] : null;
+await section("pwa hors ligne", async () => {
+  const swVer = (/const VERSION = "([^"]+)"/.exec(fs.readFileSync(path.join(root, "sw.js"), "utf8")) || [])[1];
+  check(APP_VER && swVer === APP_VER, `version du service worker (${swVer}) égale à APP_VERSION de index.html (${APP_VER})`);
+  const ctxP = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, hasTouch: true });
+  const reqs = []; ctxP.on("request", r => reqs.push(r.url()));
+  const pg = await ctxP.newPage();
+  const errs = []; pg.on("pageerror", e => errs.push(String(e)));
+  await pg.goto(base);
+  // manifest : servi, JSON valide, champs attendus, icônes réelles aux tailles annoncées
+  const mHref = await pg.getAttribute('link[rel="manifest"]', "href");
+  const mRes = await fetch(new URL(mHref || "manifest.webmanifest", base));
+  let man = null; try { man = JSON.parse(await mRes.text()); } catch (e) { man = null; }
+  check(mRes.ok && man && man.name === "Photos ESAM" && man.short_name === "Photos ESAM" && man.lang === "fr" && man.start_url === "./" && man.scope === "./" && man.display === "standalone", `manifest ${mHref} servi et valide (nom, langue, start_url ./, scope ./, standalone)`);
+  const themeMeta = await pg.getAttribute('meta[name="theme-color"]', "content");
+  check(man && /^#[0-9A-F]{6}$/i.test(man.background_color) && man.theme_color === themeMeta, `couleurs du manifest (fond ${man && man.background_color}, thème ${man && man.theme_color} = meta theme-color)`);
+  const icons = man && Array.isArray(man.icons) ? man.icons : [];
+  const iconOk = [];
+  for (const ic of icons) {
+    const r = await fetch(new URL(ic.src, base)), d = r.ok ? pngDims(Buffer.from(await r.arrayBuffer())) : null;
+    iconOk.push(!!d && ic.type === "image/png" && ic.sizes === `${d[0]}x${d[1]}`);
+  }
+  check(icons.length >= 3 && iconOk.every(Boolean) && icons.some(i => i.sizes === "192x192") && icons.some(i => i.sizes === "512x512" && i.purpose === "maskable"), `icônes du manifest : ${icons.map(i => `${i.src} ${i.sizes}${i.purpose === "maskable" ? " (maskable)" : ""}`).join(", ")}`);
+  const apple = await pg.getAttribute('link[rel="apple-touch-icon"]', "href");
+  check(apple === "icons/icon-192.png" && (await fetch(new URL(apple, base))).ok && (await pg.getAttribute('meta[name="apple-mobile-web-app-capable"]', "content")) === "yes" && (await pg.getAttribute('meta[name="apple-mobile-web-app-title"]', "content")) === "Photos ESAM", "balises iPhone : icône, appli plein écran, titre");
+  // installation : bouton de l'accueil à l'invite du navigateur (événement simulé), pas d'aide iPhone ailleurs
+  check(!(await pg.isVisible("#installBtn")) && !(await pg.isVisible("#iosHint")), "accueil : ni bouton d'installation sans invite du navigateur, ni aide iPhone");
+  await pg.evaluate(() => {
+    const e = new Event("beforeinstallprompt", { cancelable: true });
+    e.prompt = () => { window.__invite = (window.__invite || 0) + 1; }; e.userChoice = Promise.resolve({ outcome: "accepted", platform: "web" });
+    window.dispatchEvent(e); window.__annule = e.defaultPrevented;
+  });
+  check(await pg.isVisible("#installBtn") && (await pg.textContent("#installBtn")) === "Installer l'appli" && await pg.evaluate(() => window.__annule), "invite d'installation captée : bouton « Installer l'appli » affiché");
+  await pg.screenshot({ path: path.join(caps, "telephone_accueil_installer.png") });
+  await pg.click("#installBtn"); await pg.waitForTimeout(200);
+  check((await pg.evaluate(() => window.__invite)) === 1 && !(await pg.isVisible("#installBtn")) && (await pg.textContent("#toast")).includes("installée"), "bouton : invite du navigateur ouverte, bouton masqué ensuite");
+  // service worker : enregistré, actif, cache « esam-picture-v<APP_VERSION> » rempli
+  const sw = await pg.evaluate(() => Promise.race([
+    navigator.serviceWorker.ready.then(async r => ({ scope: r.scope, script: r.active && r.active.scriptURL, keys: await caches.keys() })),
+    new Promise(r => setTimeout(() => r(null), 15000))]));
+  check(sw && sw.script === `${base}sw.js` && sw.scope === base, `service worker enregistré (${sw && sw.script}, portée ${sw && sw.scope})`);
+  const cacheName = `esam-picture-v${APP_VER}`;
+  check(sw && sw.keys.length === 1 && sw.keys[0] === cacheName, `cache versionné ${sw && sw.keys.join(", ")} (attendu ${cacheName})`);
+  const cached = await pg.evaluate(n => caches.open(n).then(c => c.keys()).then(k => k.map(r => r.url)), cacheName);
+  const attendus = ["", "index.html", "manifest.webmanifest", "vendor/anton-latin.woff2", "vendor/montserrat-latin.woff2", "icons/icon-192.png", "icons/icon-512.png", "icons/icon-512-maskable.png"].map(f => base + f);
+  check(attendus.every(u => cached.includes(u)), `fichiers de l'appli en cache (${cached.length})`);
+  // hors ligne : rechargement, titre, polices servies par le service worker, une photo se charge et s'exporte
+  await ctxP.setOffline(true);
+  await pg.reload();
+  const off = await pg.evaluate(async () => {
+    await document.fonts.ready;
+    await Promise.all([document.fonts.load("20px Anton"), document.fonts.load("700 16px Montserrat")]).catch(() => {});
+    const f = await fetch("vendor/montserrat-latin.woff2").then(r => r.ok && r.headers.get("content-type")).catch(() => "erreur");
+    return { titre: document.title, ctrl: !!navigator.serviceWorker.controller, online: navigator.onLine, ver: document.getElementById("verBadge").textContent,
+      polices: Array.from(document.fonts).map(x => `${x.family}:${x.status}`), f };
+  });
+  check(!off.online && off.titre === "Photos ESAM" && off.ctrl && off.ver === `v${APP_VER}`, `hors ligne : la page se recharge (titre « ${off.titre} », ${off.ver}, servie par le service worker)`);
+  check(off.polices.length >= 2 && off.polices.every(x => x.endsWith(":loaded")) && off.f === "font/woff2", `hors ligne : polices servies (${off.polices.join(", ")})`);
+  await pg.setInputFiles("#fileIn", [await fakePhoto(ctxP, 1200, 900, "HORS_LIGNE.jpg")]);
+  await pg.waitForSelector("#main:not([hidden])");
+  await pg.click('[data-tab="export"]');
+  const [dlo] = await Promise.all([pg.waitForEvent("download"), pg.click('[data-act="export"]')]);
+  const dimo = jpgDims(fs.readFileSync(await dlo.path()));
+  check(dimo && dimo.join("x") === "1080x1080", `hors ligne : photo chargée et exportée (${dimo && dimo.join("x")})`);
+  await ctxP.setOffline(false);
+  // mise à jour : un sw.js d'une autre version est publié ; proposé sans rechargement automatique, appliqué au clic
+  swOverride = `${APP_VER}-maj`;
+  await pg.evaluate(() => { window.__marque = 1; return navigator.serviceWorker.getRegistration().then(r => r.update()); });
+  const vu = await pg.waitForSelector("#majBtn:not([hidden])", { timeout: 15000 }).then(() => true, () => false);
+  await pg.waitForTimeout(500);
+  check(vu && (await pg.textContent("#majBtn")) === "Nouvelle version disponible : recharger" && (await pg.evaluate(() => window.__marque)) === 1, "nouvelle version installée : « Nouvelle version disponible : recharger » proposé, page non rechargée");
+  await pg.screenshot({ path: path.join(caps, "telephone_mise_a_jour.png") });
+  if (vu) {
+    await Promise.all([pg.waitForEvent("load", { timeout: 15000 }), pg.click("#majBtn")]);
+    await pg.waitForFunction(() => !!navigator.serviceWorker.controller).catch(() => {});
+    const apres = await pg.evaluate(() => caches.keys().then(k => ({ k, marque: window.__marque || 0 })));
+    check(apres.marque === 0 && apres.k.join() === `esam-picture-v${APP_VER}-maj` && !(await pg.isVisible("#majBtn")), `au clic : page rechargée avec la nouvelle version, ancien cache supprimé (${apres.k.join(", ")})`);
+  }
+  swOverride = null;
+  const autres = reqs.filter(u => !u.startsWith(base) && !/^(data|blob):/.test(u));
+  check(autres.length === 0, `aucune requête vers un autre domaine (${autres.slice(0, 3).join(", ")})`);
+  check(errs.length === 0, `aucune erreur de page (${errs.join(" | ").slice(0, 300)})`);
+  await ctxP.close();
+  // iPhone (Safari) : pas d'invite d'installation, une phrase d'aide
+  const ctxI = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true,
+    userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1" });
+  const ip = await ctxI.newPage(); await ip.goto(base);
+  check(await ip.isVisible("#iosHint") && (await ip.textContent("#iosHint")).includes("Partager puis Sur l'écran d'accueil") && !(await ip.isVisible("#installBtn")), "iPhone Safari : aide « Partager puis Sur l'écran d'accueil », pas de bouton");
+  await ip.screenshot({ path: path.join(caps, "telephone_accueil_iphone.png") });
+  await ctxI.close();
+});
+
+/* étiquettes de la scène sur téléphone : format et consigne sans chevauchement, même avec « Carrousel 3 x carré » */
+await section("etiquettes 390x844", async () => {
+  const ctxE = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, hasTouch: true });
+  const pg = await ctxE.newPage();
+  const errs = []; pg.on("pageerror", e => errs.push(String(e)));
+  await pg.goto(base);
+  await pg.setInputFiles("#fileIn", [await fakePhoto(ctxE, 1600, 1200, "ETQ.jpg")]);
+  await pg.waitForSelector("#main:not([hidden])");
+  const boxes = () => pg.evaluate(() => ["tagFmt", "tagMode", "stage"].map(id => { const el = document.getElementById(id); if (el.hidden) return null; const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, r: r.right, b: r.bottom, h: r.height }; }));
+  const apart = (a, b) => !a || !b || a.r <= b.x || b.r <= a.x || a.b <= b.y || b.b <= a.y;
+  for (const [tab, fmt, nom] of [["cadre", "carrousel", "carrousel_cadre"], ["calques", "carrousel", "carrousel_calques"], ["cadre", "paysage", "paysage"]]) {
+    await pg.click('[data-tab="cadre"]'); await pg.click(`[data-fmt="${fmt}"]`); await pg.click(`[data-tab="${tab}"]`); await pg.waitForTimeout(300);
+    const [f, m, st] = await boxes(), dans = b => !b || (b.x >= st.x && b.r <= st.r && b.y >= st.y && b.b <= st.b);
+    check(apart(f, m) && dans(f) && dans(m) && f.h <= 40 && (!m || m.h <= 40), `${nom} : étiquettes « ${(await pg.textContent("#tagFmt")).trim()} » et « ${(await pg.textContent("#tagMode")).trim()} » côte à côte sans chevauchement, deux lignes au plus (hauteurs ${f.h.toFixed(0)} et ${m ? m.h.toFixed(0) : 0} px)`);
+    await pg.screenshot({ path: path.join(caps, `telephone_etiquettes_${nom}.png`) });
+  }
+  check((await pg.textContent("#tagFmt")).includes("Paysage 1.91:1 · 1200 x 628"), "texte complet du format conservé (nom · dimensions)");
+  check(errs.length === 0, `aucune erreur de page (${errs.join(" | ").slice(0, 300)})`);
+  await ctxE.close();
+});
+
+/* fiches de configuration des versions précédentes (tests/fiches/) : acceptées, champs retrouvés, rendu et export sans erreur */
+const TYPES_CONNUS = ["logo", "titre", "texte", "legende", "fleche", "cercle", "zoom", "signature", "montagne", "biais", "coin", "carte"];
+const DIMS = { carre: [1080, 1080], portrait: [1080, 1350], story: [1080, 1920], paysage: [1200, 628], large: [1920, 1080] };
+const proche = (a, b, e = 1e-6) => Math.abs(a - b) < e;
+const calque = (c, t) => c.calques.find(l => l.type === t);
+/* vérifications propres à chaque fiche (c : la fiche telle que l'appli l'a relue et enregistrée) */
+const ATTENDUS = {
+  "v0.1.esam.json": c => c.filtre === "chaud" && c.couleur.lum === 10 && c.flous.map(z => z.forme).join() === "ellipse,rect" && calque(c, "texte").larg === 0.9 && c.calques.every(l => l.ex === 1 && l.ey === 1)
+    && c.inclinaison === 0 && Object.keys(c.cadres).join() === "portrait" && c.pub.texte === "" && c.carrousel.n === 3 && c.selectif.actif === false && c.montage.mode === "aucun",
+  "v0.2.esam.json": c => c.grille.aimant === true && c.grille.n === 24 && ["signature", "montagne", "biais", "coin", "carte"].every(t => calque(c, t)) && calque(c, "texte").larg === 0.6 && calque(c, "coin").coin === "hd" && calque(c, "biais").miroir === true && c.flous[0].angle === 20,
+  "v0.4-bandes.esam.json": c => c.montage.mode === "bandes" && c.montage.sens === "h" && c.montage.sep === 8 && c.montage.bandes.length === 2 && c.montage.bandes[1].src === "DJI_0001_T.jpg" && c.montage.bandes[0].etiquette === "Vue large" && c.grille.aimant === false,
+  "v0.5-fusion-zoom.esam.json": c => c.montage.mode === "fusion" && c.montage.fusion.src === "DJI_0001_T.jpg" && c.montage.fusion.mode === "chaleur" && c.montage.fusion.fenetre.forme === "ellipse"
+    && c.calques[0].forme === "rect" && proche(c.calques[0].ar, 1.05) && proche(c.calques[0].hr, 1.05) && c.calques[1].src === "DJI_0001_T.jpg" && c.calques[1].ar === 1 && c.calques[1].hr === 1 && c.meta.description.includes("thermique"),
+  "v0.7.esam.json": c => c.rotation === 90 && calque(c, "titre").ex === 1.3 && calque(c, "titre").ey === 0.8 && calque(c, "cercle").ar === 1.6 && calque(c, "carte").hr === 0.9 && calque(c, "zoom").ar === 1.2 && calque(c, "zoom").hr === 0.8 && calque(c, "texte").larg === 0.7 && c.grille.n === 6,
+  "v0.10.esam.json": c => c.selectif.actif && c.selectif.teintes.join() === "jaune,rouge" && c.selectif.renfort === 25 && c.selectif.zones.map(z => z.sens).join() === "garder,exclure" && c.selectif.zones[1].pts.length === 5
+    && c.nom.animaux === "Rex et Luna" && c.nom.heure === "101530" && c.nom.date === "2024-05-01",
+  "v0.12.esam.json": c => c.inclinaison === -4.5 && calque(c, "zoom").etiquette === "Plaque",
+  "v0.13.esam.json": c => c.inclinaison === 1.5 && ["carre", "portrait", "story", "paysage"].every(k => c.cadres[k]) && c.pub.alt.startsWith("Photo ESAM : Filou") && c.pub.texte.includes("#ESAM") && c.nom.secteur === "Oisans",
+  "v0.14.esam.json": c => c.carrousel.n === 4 && c.carrousel.forme === "portrait" && c.cadres.carrousel && proche(c.cadre.w / c.cadre.h * 1600 / 1200, 4320 / 1350, 1e-6),
+  "v0.15.esam.json": c => c.flous.length === 2 && c.flous[1].forme === "trace" && c.flous[1].pts.length === 4 && c.flous[1].ep === 0.1 && c.flous[1].mode === "pixel" && c.inclinaison === 2,
+  "reference.esam.json": c => c.inclinaison === 3 && c.flous[1].forme === "trace" && c.calques.length === 8 && calque(c, "zoom").etiquette === "Zoom"
+};
+await section("fiches anciennes", async () => {
+  const dir = path.join(root, "tests", "fiches");
+  const files = fs.readdirSync(dir).filter(f => f.endsWith(".esam.json")).sort((a, b) => a.localeCompare(b, "fr", { numeric: true }));
+  check(files.length >= 10 && files.every(f => ATTENDUS[f]), `${files.length} fiches dans tests/fiches, chacune avec ses vérifications`);
+  const ctxF = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  const pg = await ctxF.newPage();
+  const errs = []; pg.on("pageerror", e => errs.push(String(e)));
+  pg.on("console", m => { if (m.type() === "error") errs.push(m.text()); });
+  await pg.goto(base);
+  await pg.setInputFiles("#fileIn", [await fakePhoto(ctxF, 1600, 1200, "DJI_0001.jpg"), await fakePhoto(ctxF, 1600, 1200, "DJI_0001_T.jpg")]);
+  await pg.waitForFunction(() => document.querySelectorAll("#film .th:not(.add)").length === 2);
+  const lire = () => pg.evaluate(() => { const k = Object.keys(localStorage).find(k => k.startsWith("esam-picture:DJI_0001.jpg|")); return k ? JSON.parse(localStorage.getItem(k)) : null; });
+  for (const f of files) {
+    const d = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")), e0 = errs.length;
+    await pg.click('#film .th[title^="DJI_0001.jpg"]');
+    await pg.evaluate(() => { const t = document.getElementById("toast"); t.hidden = true; t.textContent = ""; });
+    await pg.setInputFiles("#ficheIn", [{ name: f, mimeType: "application/json", buffer: fs.readFileSync(path.join(dir, f)) }]);
+    await pg.waitForFunction(() => document.getElementById("toast").textContent.includes("appliquée")).catch(() => {});
+    const c = await lire();
+    const nCal = (d.calques || []).filter(l => TYPES_CONNUS.includes(l && l.type)).length;
+    const base0 = c && c.format === d.format && c.calques.length === nCal && c.flous.length === (d.flous || []).length && c.montage.mode === ((d.montage && d.montage.mode) || "aucun");
+    let propre = false; try { propre = !!(c && ATTENDUS[f] && ATTENDUS[f](c)); } catch (e) { propre = false; }
+    // chaque onglet se dessine, puis l'export passe par le rendu complet
+    for (const t of ["cadre", "montage", "couleur", "flous", "calques", "export"]) { await pg.click(`[data-tab="${t}"]`); await pg.waitForTimeout(80); }
+    const [dl] = await Promise.all([pg.waitForEvent("download", { timeout: 20000 }), pg.click('[data-act="export"]')]);
+    const dims = jpgDims(fs.readFileSync(await dl.path()));
+    const att = d.format === "carrousel" ? [d.carrousel.n * 1080, d.carrousel.forme === "portrait" ? 1350 : 1080] : DIMS[d.format];
+    const okDims = dims && att && dims.join("x") === att.join("x");
+    const rate = [!base0 && "format, nombre de calques, de flous ou montage", !propre && "champs propres à la version", !okDims && "dimensions de l'export"].filter(Boolean);
+    if (rate.length) console.log(`       ${f} relue : ${JSON.stringify(c).slice(0, 1500)}`);
+    check(base0 && propre && okDims && errs.length === e0, `${f}${rate.length ? ` (en défaut : ${rate.join(", ")})` : ""} : acceptée (format ${c && c.format}, ${c && c.calques.length} calques, ${c && c.flous.length} flous, montage ${c && c.montage.mode}), champs propres à la version retrouvés, export ${dims && dims.join("x")}${errs.length > e0 ? ` ; erreurs : ${errs.slice(e0).join(" | ").slice(0, 200)}` : ""}`);
+    if (f === "v0.5-fusion-zoom.esam.json" || f === "v0.14.esam.json") await pg.screenshot({ path: path.join(caps, `pc_fiche_${f.replace(/\.esam\.json$/, "")}.png`) });
+  }
+  check(errs.length === 0, `aucune erreur de page (${errs.join(" | ").slice(0, 300)})`);
+  await ctxF.close();
+});
+
+/* export de référence : la fiche fixe tests/fiches/reference.esam.json sur la photo de test (déterministe), exportée et
+   comparée à tests/reference/reference.jpg en décodant les deux JPEG dans le navigateur ; --maj-reference la régénère */
+/* seuils : différence moyenne par pixel et par canal (sur 255), et part des pixels très différents (écart de plus de 64 sur
+   un canal) : le second critère voit un changement local (un calque déplacé) que la moyenne dilue */
+const REF_JPG = path.join(root, "tests", "reference", "reference.jpg"), REF_SEUIL = 2, REF_FORT = 0.5;
+await section("export de reference", async () => {
+  const ctxR = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  const pg = await ctxR.newPage();
+  const errs = []; pg.on("pageerror", e => errs.push(String(e)));
+  await pg.goto(base);
+  await pg.setInputFiles("#fileIn", [await fakePhoto(ctxR, 1600, 1200, "REF.jpg")]);
+  await pg.waitForSelector("#main:not([hidden])");
+  await pg.setInputFiles("#ficheIn", [{ name: "reference.esam.json", mimeType: "application/json", buffer: fs.readFileSync(path.join(root, "tests", "fiches", "reference.esam.json")) }]);
+  await pg.waitForFunction(() => document.getElementById("toast").textContent.includes("appliquée")).catch(() => {});
+  await pg.evaluate(() => document.fonts.ready);
+  await pg.click('[data-tab="export"]'); await pg.waitForTimeout(300);
+  const [dl] = await Promise.all([pg.waitForEvent("download"), pg.click('[data-act="export"]')]);
+  const jpg = fs.readFileSync(await dl.path());
+  fs.writeFileSync(path.join(caps, "pc_export_reference.jpg"), jpg);
+  check(errs.length === 0, `fiche de référence appliquée et exportée sans erreur (${errs.join(" | ").slice(0, 200)})`);
+  if (MAJ_REF) {
+    fs.mkdirSync(path.dirname(REF_JPG), { recursive: true }); fs.writeFileSync(REF_JPG, jpg);
+    console.log(`  maj  référence régénérée : tests/reference/reference.jpg (${jpgDims(jpg).join("x")}, ${jpg.length} octets) ; vérifier l'image avant de la commiter`);
+  } else if (!fs.existsSync(REF_JPG)) {
+    check(false, "référence absente (tests/reference/reference.jpg) : la créer avec node tests/test_fumee.mjs --only reference --maj-reference");
+  } else {
+    const r = await pg.evaluate(async ([a, b]) => {
+      const load = b64 => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = "data:image/jpeg;base64," + b64; });
+      const [ia, ib] = [await load(a), await load(b)];
+      if (ia.naturalWidth !== ib.naturalWidth || ia.naturalHeight !== ib.naturalHeight) return { dims: [ia.naturalWidth, ia.naturalHeight, ib.naturalWidth, ib.naturalHeight] };
+      const px = i => { const c = document.createElement("canvas"); c.width = i.naturalWidth; c.height = i.naturalHeight; const x = c.getContext("2d"); x.drawImage(i, 0, 0); return x.getImageData(0, 0, c.width, c.height).data; };
+      const da = px(ia), db = px(ib); let s = 0, mx = 0, n = 0, fort = 0;
+      for (let k = 0; k < da.length; k += 4) {
+        let m = 0; for (let j = 0; j < 3; j++) { const v = Math.abs(da[k + j] - db[k + j]); s += v; n++; if (v > m) m = v; }
+        if (m > mx) mx = m; if (m > 64) fort++;
+      }
+      return { w: ia.naturalWidth, h: ia.naturalHeight, moy: s / n, max: mx, fort: 100 * fort / (da.length / 4) };
+    }, [fs.readFileSync(REF_JPG).toString("base64"), jpg.toString("base64")]);
+    if (r.dims) check(false, `export de référence : dimensions ${r.dims[2]}x${r.dims[3]} au lieu de ${r.dims[0]}x${r.dims[1]}`);
+    else {
+      const ok = r.moy < REF_SEUIL && r.fort < REF_FORT, mesure = `différence moyenne ${r.moy.toFixed(3)} sur 255 (seuil ${REF_SEUIL}), pixels très différents ${r.fort.toFixed(2)} % (seuil ${REF_FORT} %), écart maximal ${r.max}`;
+      check(ok, ok ? `export conforme à la référence ${r.w}x${r.h} : ${mesure}`
+      : `export différent de la référence : ${mesure}. Comparer tests/captures/pc_export_reference.jpg et tests/reference/reference.jpg ; si le changement de rendu est voulu : node tests/test_fumee.mjs --only reference --maj-reference`);
+    }
+  }
+  await ctxR.close();
+});
+if (only && !nSections) { failures++; console.log(`\nECHEC aucune section ne correspond à « ${only} »`); }
 await browser.close(); server.close();
 console.log(failures ? `\n${failures} échec(s)` : "\nTout est passé.");
 process.exit(failures ? 1 : 0);
