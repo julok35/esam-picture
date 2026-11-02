@@ -173,18 +173,28 @@ details.sub[open]>summary::before{transform:rotate(90deg)}
 .mod .ckl{margin-top:4px}
 
 /* ---------- dialogue vidéo (extraction d'images) ---------- */
-dialog{border:0;border-radius:14px;padding:0;background:var(--bg);color:var(--ink);width:min(96vw,760px);max-height:94vh}
+dialog{border:0;border-radius:14px;padding:0;background:var(--bg);color:var(--ink);width:min(96vw,760px);max-height:94vh;overflow:auto}
 dialog::backdrop{background:rgba(0,0,0,.6)}
 .vd{padding:12px 14px 14px}
 .vd h3{font-family:Anton,Impact,sans-serif;font-weight:400;font-size:20px;margin:0 0 2px}
 .vd .vn{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:8px}
-.vd video{width:100%;max-height:52vh;background:#000;border-radius:8px;display:block}
+.vd video{width:100%;max-height:42vh;background:#000;border-radius:8px;display:block}
 .vd .vt{display:flex;justify-content:space-between;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--muted);margin:6px 0 2px}
 .vd .steps{display:flex;gap:6px;margin:8px 0;flex-wrap:wrap}
 .vd .steps .btn{flex:1;min-width:0;padding:6px 4px}
 .vd .actions{margin-top:10px}
 .vd .actions .btn{flex:1}
 .vd .err{color:var(--red);font-size:13px;font-weight:600;margin:8px 0 0}
+/* rafale : début, fin, pas, progression */
+.vd .burst{border:1px solid var(--line);border-radius:12px;padding:4px 12px 10px;margin:10px 0 0}
+.vd .burst>.lbl{font-weight:700;font-size:13px;margin:8px 0}
+.vd .bgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.vd .bgrid>div{display:flex;flex-direction:column;gap:4px;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;min-width:0}
+.vd .bstep{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0 0;font-size:13px;font-weight:600}
+.vd .burst .hint{margin:6px 0 0}
+.vd .burst .actions{margin-top:8px}
+.vd .vbprog{font-weight:700;font-size:14px;margin:8px 0 0;font-variant-numeric:tabular-nums}
+@media (min-width:700px){.vd video{max-height:36vh}.vd .bgrid>div{flex-direction:row;align-items:center;justify-content:space-between}.vd .bgrid .btn{flex:none}}
 
 /* ---------- écran large ---------- */
 @media (min-width:1100px){
@@ -286,6 +296,17 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
     <p class="err" id="verr" hidden></p>
     <div class="actions"><button type="button" class="btn primary" data-vact="capture">Capturer cette image</button><button type="button" class="btn ghost" data-vact="close">Fermer</button></div>
     <p class="hint" id="vcount" style="margin:8px 0 0"></p>
+    <div class="burst" id="vburst">
+      <div class="lbl">Rafale</div>
+      <div class="bgrid">
+        <div><span>Début <b id="vbA">0:00.00</b></span><button type="button" class="btn small ghost" data-vact="bstart">Début ici</button></div>
+        <div><span>Fin <b id="vbB">0:10.00</b></span><button type="button" class="btn small ghost" data-vact="bend">Fin ici</button></div>
+      </div>
+      <div class="bstep"><span>Une image toutes les</span><div class="chips"><button type="button" class="chip" data-vact="bstep" data-s="0.5">0,5 s</button><button type="button" class="chip" data-vact="bstep" data-s="1">1 s</button><button type="button" class="chip" data-vact="bstep" data-s="2">2 s</button><button type="button" class="chip" data-vact="bstep" data-s="5">5 s</button></div></div>
+      <p class="hint" id="vbInfo"></p>
+      <div class="actions"><button type="button" class="btn" data-vact="burst">Capturer la rafale</button><button type="button" class="btn ghost danger" data-vact="bstop" hidden>Arrêter</button></div>
+      <p class="vbprog" id="vbProg" role="status" hidden></p>
+    </div>
   </div>
 </dialog>
 <input type="file" id="dirIn" webkitdirectory multiple>
@@ -299,7 +320,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 /* Photos ESAM : préparation d'images pour les réseaux sociaux. Un seul fichier, pas de build, ES2017.
    Sections : utils, modèle, formats, chargement, dossier de travail, rendu (base, couleur, flous, calques),
    aperçu et interactions, panneaux, export, démarrage. Voir docs/ARCHITECTURE.md. */
-const APP_VERSION = "0.14";
+const APP_VERSION = "0.15";
 /* pied standard du texte de publication proposé (onglet Export, bouton « Proposer ») : à modifier ici */
 const PUB_PIED = "Équipe de Secours Animalier en Montagne\n#ESAM #SecoursAnimalier #Montagne";
 const $ = id => document.getElementById(id);
@@ -355,7 +376,9 @@ function wrapLines(ctx, txt, maxW){
      couleur {lum, contraste, sat, temp, vignette} de -100 à 100, filtre,
      selectif {actif, teintes, tolerance, seuil, renfort, zones} : couleurs conservées (tenues jaune fluo, rouge vif), le reste en noir
        et blanc ; zones [{id, sens: garder|exclure, pts:[[x, y], ...]}] tracées au lasso, en fraction de l'image source (comme les flous),
-     flous [{id, forme, mode, force, x, y, w, h}] en fraction de l'image source (centre et taille),
+     flous [{id, forme, mode, force, x, y, w, h, angle}] en fraction de l'image source (centre et taille) ; forme ellipse|rect,
+       ou trace (pinceau) : {id, forme:"trace", mode, force, pts:[[x, y], ...] (polyline, 2 à 400 points, en fraction de la
+       source comme le lasso), ep (épaisseur du trait, fraction du côté court de la source, 0.02 à 0.3)},
      calques [{id, type, x, y, s, rot, ex, ey, ...}] : x, y en fraction de l'image de sortie, s = échelle, rot en degrés,
        ex, ey = étirement horizontal et vertical (poignées blanches) ; les calques à largeur ou hauteur propre (texte larg,
        ar, hr) les règlent à la place sans déformer leur contenu,
@@ -369,7 +392,7 @@ function wrapLines(ctx, txt, maxW){
        n de 2 à 5 (3 par défaut), forme carre|portrait ; voir fmtById et unitOf.
    Les modèles de mise en page (onglet Calques) sont gardés dans localStorage (esam-picture:modeles), pas dans la fiche. */
 const pendingFiches = {};   // fiches importées avant leurs photos, par nom de fichier
-const S = {photos:[], sel:null, tab:"cadre", mode:"calques", dirHandle:null, dirWritable:false, fsel:null, csel:null, lsub:"calque", csrc:null, msel:0, msub:"calque", mview:"deux", zsel:null, lasso:false, original:false, quick:false, secteurs:[], carrousel:false, aaSrc:null};   // original : bouton « Original » maintenu ; quick : aperçu allégé pendant le glissement d'un curseur ; carrousel : bloc Carrousel déplié (lignes de coupe sur l'aperçu) ; aaSrc : photo « Après » choisie (transitoires, jamais dans la fiche)
+const S = {photos:[], sel:null, tab:"cadre", mode:"calques", dirHandle:null, dirWritable:false, fsel:null, csel:null, lsub:"calque", csrc:null, msel:0, msub:"calque", mview:"deux", zsel:null, lasso:false, pinceau:false, brush:{mode:"doux", force:2, ep:0.08}, original:false, quick:false, secteurs:[], carrousel:false, aaSrc:null};   // pinceau : tracé d'une zone de flou au pinceau en cours (brush : son type, son intensité, son épaisseur) ; original : bouton « Original » maintenu ; quick : aperçu allégé pendant le glissement d'un curseur ; carrousel : bloc Carrousel déplié (lignes de coupe sur l'aperçu) ; aaSrc : photo « Après » choisie (transitoires, jamais dans la fiche)
 const FORMATS = [
   {id:"carre", nom:"Carré 1:1", res:"Instagram, Facebook, LinkedIn", w:1080, h:1080},
   {id:"portrait", nom:"Portrait 4:5", res:"Instagram, Facebook", w:1080, h:1350},
@@ -600,8 +623,7 @@ function applyCfg(p, d){
   if(d.couleur) Object.keys(c.couleur).forEach(k => { c.couleur[k] = clamp(+d.couleur[k] || 0, -100, 100); });
   if(FILTRES.some(f => f.id === d.filtre)) c.filtre = d.filtre;
   c.selectif = readSelectif(d.selectif);
-  c.flous = (Array.isArray(d.flous) ? d.flous : []).map(z => ({id:z.id || uid(), forme:z.forme === "rect" ? "rect" : "ellipse", mode:MODES_FLOU.some(m => m[0] === z.mode) ? z.mode : "doux",
-    force:clamp(+z.force || 2, 1, 3), x:clamp(+z.x || 0.5, 0, 1), y:clamp(+z.y || 0.5, 0, 1), w:clamp(+z.w || 0.2, 0.02, 1), h:clamp(+z.h || 0.2, 0.02, 1), angle:+z.angle || 0}));
+  c.flous = (Array.isArray(d.flous) ? d.flous : []).map(readFlou).filter(Boolean);   // une trace sans points valides est ignorée
   c.calques = readCalques(d.calques);
   c.montage = readMontage(d.montage);
   if(d.grille && typeof d.grille === "object") c.grille = readGrille(d.grille);
@@ -612,6 +634,19 @@ function applyCfg(p, d){
   c.carrousel = readCarrousel(d.carrousel);   // fiche d'avant 0.14 : 3 diapositives carrées
   p.cfg = c; fixCadre(p); p.cache = {};
   return true;
+}
+/* zone de flou d'une fiche : ellipse ou rectangle (centre, taille, angle), ou trace au pinceau (polyline pts et épaisseur ep,
+   fiche d'avant 0.15 : inconnue) ; null si illisible (trace de moins de 2 points valides) */
+const TRACE_MAX = 400, EP_MIN = 0.02, EP_MAX = 0.3, EP_DEF = 0.08;
+function readEp(v){ return clamp(+v || EP_DEF, EP_MIN, EP_MAX); }
+function readFlou(z){
+  if(!z || typeof z !== "object") return null;
+  const o = {id:typeof z.id === "string" && z.id ? z.id : uid(), forme:z.forme === "rect" ? "rect" : z.forme === "trace" ? "trace" : "ellipse", mode:MODES_FLOU.some(m => m[0] === z.mode) ? z.mode : "doux", force:clamp(Math.round(+z.force) || 2, 1, 3)};
+  if(o.forme === "trace"){
+    const pts = (Array.isArray(z.pts) ? z.pts : []).filter(pt => Array.isArray(pt) && pt.length >= 2 && isFinite(+pt[0]) && isFinite(+pt[1]) && pt[0] !== null && pt[1] !== null).slice(0, TRACE_MAX).map(pt => [clamp(+pt[0], -0.5, 1.5), clamp(+pt[1], -0.5, 1.5)]);
+    return pts.length >= 2 ? Object.assign(o, {pts:pts, ep:readEp(z.ep)}) : null;
+  }
+  return Object.assign(o, {x:clamp(+z.x || 0.5, 0, 1), y:clamp(+z.y || 0.5, 0, 1), w:clamp(+z.w || 0.2, 0.02, 1), h:clamp(+z.h || 0.2, 0.02, 1), angle:+z.angle || 0});
 }
 /* calques d'une fiche ou d'un modèle : seuls les types connus sont gardés, chaque champ est borné (copie, jamais la liste reçue) */
 function readCalques(list){
@@ -1342,12 +1377,49 @@ function cropRef(p){ return isBandes(p) ? {x:0, y:0, w:1, h:1} : p.cfg.cadre; }
    Trois rendus : doux (flou gaussien approché par réductions successives, bords fondus), pixelisé (mosaïque),
    dynamique (filé directionnel). Sans ctx.filter, pour marcher sur tous les navigateurs.
    Avec une inclinaison, la zone suit le contenu : centre transformé par T, taille multipliée par k, angle augmenté de
-   l'inclinaison. rot : orientation dans le repère de sortie, en radians. */
+   l'inclinaison. rot : orientation dans le repère de sortie, en radians ; sz : taille caractéristique (force du flou).
+   Trace au pinceau : ses points passent par toOut comme ceux du lasso ; x, y, w, h sont alors la boîte englobante du trait
+   (épaisseur comprise), pts ses points et ep son épaisseur dans le repère de sortie, rel les points relatifs au centre. */
 function zoneOut(z, p, cw, ch){
+  if(z.forme === "trace") return traceOut(z, p, cw, ch);
   const c = cropRef(p), t = inclP(p);
-  if(!t) return {x:(z.x - c.x)/c.w*cw, y:(z.y - c.y)/c.h*ch, w:z.w/c.w*cw, h:z.h/c.h*ch, rot:(z.angle || 0)*Math.PI/180};
-  const o = toOut(p, z.x, z.y, cw, ch);
-  return {x:o[0], y:o[1], w:z.w/c.w*cw*t.k, h:z.h/c.h*ch*t.k, rot:((z.angle || 0) + t.deg)*Math.PI/180};
+  if(!t) return {x:(z.x - c.x)/c.w*cw, y:(z.y - c.y)/c.h*ch, w:z.w/c.w*cw, h:z.h/c.h*ch, rot:(z.angle || 0)*Math.PI/180, sz:Math.min(z.w/c.w*cw, z.h/c.h*ch)};
+  const o = toOut(p, z.x, z.y, cw, ch), w = z.w/c.w*cw*t.k, h = z.h/c.h*ch*t.k;
+  return {x:o[0], y:o[1], w:w, h:h, rot:((z.angle || 0) + t.deg)*Math.PI/180, sz:Math.min(w, h)};
+}
+/* épaisseur d'une trace (fraction du côté court du repère des flous : la source, ou la sortie en bandeaux) en pixels de sortie */
+function epOut(p, ep, cw, ch){
+  const c = cropRef(p), t = inclP(p), b = isBandes(p), sw = b ? cw : srcW(p), sh = b ? ch : srcH(p);
+  return ep*Math.min(sw, sh)*cw/(c.w*sw)*(t ? t.k : 1);
+}
+function traceOut(z, p, cw, ch){
+  const pts = z.pts.map(pt => toOut(p, pt[0], pt[1], cw, ch)), ep = epOut(p, z.ep, cw, ch);
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  pts.forEach(q => { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); });
+  const cx = (x0 + x1)/2, cy = (y0 + y1)/2;
+  return {x:cx, y:cy, w:x1 - x0 + ep, h:y1 - y0 + ep, rot:0, sz:ep, ep:ep, pts:pts, rel:pts.map(q => [q[0] - cx, q[1] - cy])};
+}
+/* distance d'un point q {x, y} à une polyline (liste de [x, y]) */
+function distPoly(pts, q){
+  let best = Infinity;
+  for(let i = 0; i < pts.length; i++){
+    const a = pts[i], b = pts[Math.min(i + 1, pts.length - 1)], dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx*dx + dy*dy;
+    const k = l2 ? clamp(((q.x - a[0])*dx + (q.y - a[1])*dy)/l2, 0, 1) : 0;
+    best = Math.min(best, Math.hypot(q.x - a[0] - k*dx, q.y - a[1] - k*dy));
+  }
+  return best;
+}
+/* le point q (repère de sortie) touche-t-il la zone ? trace : près du trait (moins de ep/2 plus la marge) ; sinon dans sa boîte */
+function zoneHit(z, r, q, margin){
+  if(z.forme === "trace") return distPoly(r.pts, q) <= r.ep/2 + margin;
+  return inBox({cx:r.x, cy:r.y, hw:r.w/2, hh:r.h/2, rot:r.rot}, q, margin);
+}
+/* boîte englobante d'une zone en fraction du repère des flous (centre x, y ; taille w, h), trace comprise (épaisseur incluse) */
+function flouBounds(p, z){
+  if(z.forme !== "trace") return {x:z.x, y:z.y, w:z.w, h:z.h};
+  const sw = srcW(p), sh = srcH(p), e = z.ep*Math.min(sw, sh), xs = z.pts.map(pt => pt[0]), ys = z.pts.map(pt => pt[1]);
+  const x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs), y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+  return {x:(x0 + x1)/2, y:(y0 + y1)/2, w:x1 - x0 + e/sw, h:y1 - y0 + e/sh};
 }
 function downUp(src, factor, smooth){
   // réduit de « factor » en plusieurs passes (meilleur lissage) puis remonte
@@ -1367,20 +1439,20 @@ function downUp(src, factor, smooth){
    la taille du rendu et les clés des zones précédentes dont la région touche la sienne (elles ont modifié ce qu'elle
    floute) : quand une zone bouge, seules elle et les zones posées après elle qui la recouvrent sont recalculées, les
    autres sont recomposées telles quelles. Même rendu au pixel près qu'un calcul complet. */
-function blurZone(out, z, r, u, bw){
-  const rot = r.rot, bx = Math.round(r.x - bw/2), by = Math.round(r.y - bw/2);
-  const reg = mkCanvas(bw, bw), rx = reg.getContext("2d");
-  rx.drawImage(out, bx, by, bw, bw, 0, 0, bw, bw);
+function blurZone(out, z, r, u, bw, bh){
+  const rot = r.rot, bx = Math.round(r.x - bw/2), by = Math.round(r.y - bh/2);
+  const reg = mkCanvas(bw, bh), rx = reg.getContext("2d");
+  rx.drawImage(out, bx, by, bw, bh, 0, 0, bw, bh);
   let fx;
-  const strength = [0, 6, 12, 22][z.force]*u*Math.max(1, Math.min(r.w, r.h)/(90*u));
+  const strength = [0, 6, 12, 22][z.force]*u*Math.max(1, r.sz/(90*u));
   if(z.mode === "pixel"){
-    const px = Math.max(4, Math.round([0, 10, 18, 28][z.force]*u*Math.max(1, Math.min(r.w, r.h)/(160*u))));
-    const nw = Math.max(1, Math.round(bw/px)), small = mkCanvas(nw, nw), sx = small.getContext("2d");
-    sx.imageSmoothingEnabled = true; sx.drawImage(reg, 0, 0, bw, bw, 0, 0, nw, nw);
-    fx = mkCanvas(bw, bw); const fc = fx.getContext("2d"); fc.imageSmoothingEnabled = false; fc.drawImage(small, 0, 0, nw, nw, 0, 0, bw, bw);
+    const px = Math.max(4, Math.round([0, 10, 18, 28][z.force]*u*Math.max(1, r.sz/(160*u))));
+    const nw = Math.max(1, Math.round(bw/px)), nh = Math.max(1, Math.round(bh/px)), small = mkCanvas(nw, nh), sx = small.getContext("2d");
+    sx.imageSmoothingEnabled = true; sx.drawImage(reg, 0, 0, bw, bh, 0, 0, nw, nh);
+    fx = mkCanvas(bw, bh); const fc = fx.getContext("2d"); fc.imageSmoothingEnabled = false; fc.drawImage(small, 0, 0, nw, nh, 0, 0, bw, bh);
   } else if(z.mode === "dynamique"){
     const soft = downUp(reg, Math.max(1.5, strength/5), true), n = 14, len = Math.max(10*u, strength*2.2);
-    fx = mkCanvas(bw, bw); const fc = fx.getContext("2d"); fc.globalAlpha = 1/n;
+    fx = mkCanvas(bw, bh); const fc = fx.getContext("2d"); fc.globalAlpha = 1/n;
     for(let i = 0; i < n; i++){ const t = (i/(n - 1) - 0.5)*len; fc.drawImage(soft, Math.cos(rot)*t, Math.sin(rot)*t); }
     fc.globalAlpha = 1;
   } else {
@@ -1390,10 +1462,18 @@ function blurZone(out, z, r, u, bw){
   return fx;
 }
 /* masque : forme pleine (ellipse ou rectangle arrondi) un peu réduite, puis adoucie par le même flou de réduction,
-   ce qui donne des bords fondus sur une largeur proportionnelle à la zone (« discret ») */
-function blurMask(z, r, bw){
-  const feather = z.mode === "pixel" ? 0.08 : 0.22, m0 = mkCanvas(bw, bw), mx = m0.getContext("2d");
-  mx.translate(bw/2, bw/2); mx.rotate(r.rot); mx.fillStyle = "#000"; mx.beginPath();
+   ce qui donne des bords fondus sur une largeur proportionnelle à la zone (« discret ») ; trace : le trait lui-même en
+   ligne épaisse (bouts et angles arrondis), de largeur ep un peu réduite, adouci de même (bords fondus selon l'épaisseur) */
+function blurMask(z, r, bw, bh){
+  const feather = z.mode === "pixel" ? 0.08 : 0.22, m0 = mkCanvas(bw, bh), mx = m0.getContext("2d");
+  mx.translate(bw/2, bh/2);
+  if(z.forme === "trace"){
+    mx.lineCap = "round"; mx.lineJoin = "round"; mx.lineWidth = r.ep*(1 - feather*0.5); mx.strokeStyle = "#000"; mx.beginPath();
+    r.rel.forEach((q, i) => { if(i) mx.lineTo(q[0], q[1]); else mx.moveTo(q[0], q[1]); });
+    mx.stroke();
+    return downUp(m0, Math.max(1.5, feather*r.ep/5), true);
+  }
+  mx.rotate(r.rot); mx.fillStyle = "#000"; mx.beginPath();
   const w0 = r.w/2*(1 - feather*0.5), h0 = r.h/2*(1 - feather*0.5);
   if(z.forme === "rect") rRound(mx, -w0, -h0, w0*2, h0*2, Math.min(w0, h0)*0.3); else mx.ellipse(0, 0, w0, h0, 0, 0, Math.PI*2);
   mx.fill();
@@ -1405,22 +1485,23 @@ function applyBlurs(base, p, cw, ch){
   const out = mkCanvas(cw, ch), ctx = out.getContext("2d"); ctx.drawImage(base, 0, 0);
   const u = unitOf(p, cw, ch), prev = p.cache.zones || {}, next = {}, done = [];
   zones.forEach(z => {
-    const r = zoneOut(z, p, cw, ch);
+    const r = zoneOut(z, p, cw, ch), tr = z.forme === "trace";
     const diag = Math.sqrt(r.w*r.w + r.h*r.h), pad = 24*u*z.force;
-    // région de travail : carré englobant la zone tournée, avec marge
-    const bw = Math.ceil(diag + 2*pad), bx = Math.round(r.x - bw/2), by = Math.round(r.y - bw/2);
-    if(bw < 2) return;
-    const deps = done.filter(d => d.bx < bx + bw && bx < d.bx + d.bw && d.by < by + bw && by < d.by + d.bw).map(d => d.h);
-    const key = JSON.stringify([z.id, z.forme, z.mode, z.force, z.x, z.y, z.w, z.h, z.angle || 0, r.x, r.y, r.w, r.h, r.rot, cw, ch, deps]);
-    const mkey = JSON.stringify([z.forme, z.mode, r.w, r.h, r.rot, bw]);
+    // région de travail : carré englobant la zone tournée, avec marge ; trace : sa boîte englobante élargie de la marge
+    const bw = Math.ceil((tr ? r.w : diag) + 2*pad), bh = tr ? Math.ceil(r.h + 2*pad) : bw, bx = Math.round(r.x - bw/2), by = Math.round(r.y - bh/2);
+    if(bw < 2 || bh < 2) return;
+    const deps = done.filter(d => d.bx < bx + bw && bx < d.bx + d.bw && d.by < by + bh && by < d.by + d.bh).map(d => d.h);
+    const shape = tr ? [hashKey(JSON.stringify(z.pts)), z.ep] : [z.x, z.y, z.w, z.h, z.angle || 0];
+    const key = JSON.stringify([z.id, z.forme, z.mode, z.force, shape, r.x, r.y, r.w, r.h, r.rot, cw, ch, deps]);
+    const mkey = JSON.stringify(tr ? [z.forme, z.mode, hashKey(JSON.stringify(r.rel)), r.ep, bw, bh] : [z.forme, z.mode, r.w, r.h, r.rot, bw]);
     let e = prev[z.id];
     if(!e || e.key !== key){
-      const mk = e && e.mkey === mkey ? e.mk : blurMask(z, r, bw), fx = blurZone(out, z, r, u, bw);
+      const mk = e && e.mkey === mkey ? e.mk : blurMask(z, r, bw, bh), fx = blurZone(out, z, r, u, bw, bh);
       const fc = fx.getContext("2d"); fc.globalCompositeOperation = "destination-in"; fc.drawImage(mk, 0, 0); fc.globalCompositeOperation = "source-over";
       e = {key:key, mkey:mkey, mk:mk, fx:fx};
     }
     next[z.id] = e;
-    done.push({bx:bx, by:by, bw:bw, h:hashKey(key)});
+    done.push({bx:bx, by:by, bw:bw, bh:bh, h:hashKey(key)});
     ctx.drawImage(e.fx, bx, by);
   });
   p.cache.zones = next;
@@ -1554,7 +1635,7 @@ function zoomFromBase(p, l){
   if(l.src) return false;
   if(isBandes(p)) return true;
   const z = l.zone, hw = z.w/2, hh = z.w*zoneRatio({sw:srcW(p), sh:srcH(p)}, l, 1)/2;   // demi-tailles de la zone, en fraction de la source
-  return (p.cfg.flous || []).some(f => Math.abs(f.x - z.x) < hw + (f.w + f.h)/2 && Math.abs(f.y - z.y) < hh + (f.w + f.h)/2);
+  return (p.cfg.flous || []).some(z0 => { const f = flouBounds(p, z0); return Math.abs(f.x - z.x) < hw + (f.w + f.h)/2 && Math.abs(f.y - z.y) < hh + (f.w + f.h)/2; });
 }
 /* dimensions de la source grossie (la photo d'origine tournée, ou l'image de sortie) */
 function zoomDims(p, l, q){ if(l.src ? !q : isBandes(p)){ const o = outSize(p); return {sw:o.W, sh:o.H}; } return {sw:srcW(q), sh:srcH(q)}; }
@@ -1772,8 +1853,21 @@ function drawOutView(p){
   }
   try { renderAll(ctx, p, o.W, o.H, cw, ch); } finally { delete p.cfg.montage._vue; if(keep){ p.cache = keep; QUICK = false; } }
   if(S.tab === "flous"){
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const line = (pts, w, col, dash) => { ctx.lineWidth = w; ctx.strokeStyle = col; ctx.setLineDash(dash || []); ctx.beginPath(); pts.forEach((q, i) => { if(i) ctx.lineTo(q[0], q[1]); else ctx.moveTo(q[0], q[1]); }); ctx.stroke(); };
     (p.cfg.flous || []).forEach((z, i) => {
       const r = zoneOut(z, p, o.W, o.H), sel = z.id === S.fsel;
+      if(z.forme === "trace"){
+        // trait au pinceau : sa largeur en transparence, son axe en pointillé (plein si choisi), son numéro au départ
+        ctx.save(); ctx.lineCap = "round"; ctx.lineJoin = "round";
+        line(r.pts, r.ep, sel ? "rgba(249,221,16,.22)" : "rgba(255,255,255,.12)");
+        ctx.shadowColor = "rgba(0,0,0,.6)"; ctx.shadowBlur = hx(3);
+        line(r.pts, hx(sel ? 2 : 1.2), sel ? "#F9DD10" : "rgba(255,255,255,.8)", sel ? [] : [hx(5), hx(4)]);
+        ctx.fillStyle = "#fff"; ctx.font = `700 ${hx(12*dpr)}px ${MONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(String(i + 1), r.pts[0][0], r.pts[0][1]);
+        ctx.restore();
+        if(sel) drawBox(ctx, {cx:r.x, cy:r.y, hw:r.w/2, hh:r.h/2, rot:0, nohand:true}, false);
+        return;
+      }
       ctx.save(); ctx.translate(r.x, r.y); ctx.rotate(r.rot);
       ctx.lineWidth = hx(sel ? 2 : 1.2); ctx.strokeStyle = sel ? "#F9DD10" : "rgba(255,255,255,.8)"; ctx.setLineDash(sel ? [] : [hx(5), hx(4)]);
       ctx.shadowColor = "rgba(0,0,0,.6)"; ctx.shadowBlur = hx(3);
@@ -1782,6 +1876,14 @@ function drawOutView(p){
       ctx.restore();
       if(sel) drawBox(ctx, {cx:r.x, cy:r.y, hw:r.w/2, hh:r.h/2, rot:r.rot}, true);
     });
+    if(G.act && G.act.kind === "pinceau" && G.act.pts.length){
+      // trait en cours : la largeur du pinceau en jaune transparent, son axe en jaune
+      const pts = G.act.pts.map(q => [q.x, q.y]); if(pts.length === 1) pts.push([pts[0][0] + 0.01, pts[0][1]]);
+      ctx.save(); ctx.lineCap = "round"; ctx.lineJoin = "round";
+      line(pts, epOut(p, S.brush.ep, o.W, o.H), "rgba(249,221,16,.35)");
+      ctx.shadowColor = "rgba(0,0,0,.6)"; ctx.shadowBlur = hx(3); line(pts, hx(2.5), "#F9DD10");
+      ctx.restore();
+    }
   } else if(S.tab === "couleur" && lassoOn(p)){
     const sel = p.cfg.selectif, ptOut = pt => toOut(p, pt[0], pt[1], o.W, o.H);
     const trace = (pts, close) => { ctx.beginPath(); pts.forEach((pt, i) => { if(i) ctx.lineTo(pt[0], pt[1]); else ctx.moveTo(pt[0], pt[1]); }); if(close) ctx.closePath(); ctx.stroke(); };
@@ -1832,7 +1934,7 @@ function drawOutView(p){
   const fo = fmtOf(p.cfg);
   if(fo.n && ((S.tab === "export" && S.carrousel) || S.tab === "calques")) drawCuts(ctx, fo.n, {x:0, y:0, w:o.W, h:o.H}, S.tab === "export");
   $("tagFmt").textContent = `${fo.nom} · ${o.W} x ${o.H}`;
-  $("tagMode").textContent = S.tab === "flous" ? "Flous" : S.tab === "calques" ? "Calques" : S.tab === "montage" ? "Montage" : S.tab === "couleur" && S.lasso ? "Tracez au doigt autour de la zone" : "";
+  $("tagMode").textContent = S.tab === "flous" ? (S.pinceau ? "Peignez sur ce qu'il faut flouter" : "Flous") : S.tab === "calques" ? "Calques" : S.tab === "montage" ? "Montage" : S.tab === "couleur" && S.lasso ? "Tracez au doigt autour de la zone" : "";
 }
 /* carrousel : lignes de coupe en pointillé entre les n diapositives d'un rectangle r (espace de la vue), numéros au besoin ;
    aperçu seulement (S.carrousel, onglets Calques et Cadre), jamais dans l'export */
@@ -1858,6 +1960,21 @@ function endLasso(p, pts){
   const o = outSize(p), step = Math.max(1, Math.ceil(pts.length/160));
   const z = {id:uid(), sens:S.lassoSens === "exclure" ? "exclure" : "garder", pts:pts.filter((q, i) => i % step === 0).map(q => { const f = fromOut(p, q.x, q.y, o.W, o.H); return [clamp(f[0], -0.5, 1.5), clamp(f[1], -0.5, 1.5)]; })};
   p.cfg.selectif.zones.push(z); S.zsel = z.id;
+}
+/* fin d'un trait au pinceau (onglet Flous) : points (espace de sortie) ramenés en fraction de la source comme ceux du
+   lasso, points trop proches écartés, 400 au plus ; nouvelle zone « trace » avec le type, l'intensité et l'épaisseur du
+   pinceau ; le mode pinceau se termine (le bouton « Pinceau » le relance) */
+function endPinceau(p, pts){
+  if(pts.length < 2){ toast("Peignez d'un trait, sans lever le doigt, sur ce qu'il faut flouter."); return false; }
+  S.pinceau = false;
+  const o = outSize(p), gap = Math.max(hx(4), epOut(p, S.brush.ep, o.W, o.H)/8);
+  let kept = [pts[0]];
+  for(let i = 1; i < pts.length; i++){ const a = kept[kept.length - 1], q = pts[i]; if(Math.hypot(q.x - a.x, q.y - a.y) >= gap || i === pts.length - 1) kept.push(q); }
+  if(kept.length > TRACE_MAX){ const step = (kept.length - 1)/(TRACE_MAX - 1); kept = Array.from({length:TRACE_MAX}, (_, i) => kept[Math.round(i*step)]); }
+  const r5 = v => Math.round(v*1e5)/1e5;
+  const z = {id:uid(), forme:"trace", mode:S.brush.mode, force:S.brush.force, pts:kept.map(q => { const f = fromOut(p, q.x, q.y, o.W, o.H); return [r5(clamp(f[0], -0.5, 1.5)), r5(clamp(f[1], -0.5, 1.5))]; }), ep:readEp(S.brush.ep)};
+  p.cfg.flous = (p.cfg.flous || []).concat([z]); S.fsel = z.id;
+  return true;
 }
 /* petite étiquette sur l'aperçu (taille à l'écran) ; o : l'étiquette reste dans l'image */
 function tagOn(ctx, x, y, txt, bg, fg, o){
@@ -1928,7 +2045,12 @@ function ptPos(e){ const r = cv.getBoundingClientRect(); return {x:(e.clientX - 
 function curObj(p){
   if(S.tab === "cadre"){ if(!fmtOf(p.cfg).w || isBandes(p)) return null; const c = cropRect(p); return {kind:"cadre", ref:p.cfg.cadre, cx:c.x + c.w/2, cy:c.y + c.h/2, hw:c.w/2, hh:c.h/2, rot:0}; }
   const o = outSize(p);
-  if(S.tab === "flous"){ const z = (p.cfg.flous || []).find(x => x.id === S.fsel); if(!z) return null; const r = zoneOut(z, p, o.W, o.H); return {kind:"flou", ref:z, cx:r.x, cy:r.y, hw:r.w/2, hh:r.h/2, rot:r.rot}; }
+  if(S.tab === "flous"){
+    const z = (p.cfg.flous || []).find(x => x.id === S.fsel); if(!z) return null; const r = zoneOut(z, p, o.W, o.H);
+    // trace : boîte englobante sans poignée (le curseur Épaisseur suffit), touchée près du trait seulement
+    if(z.forme === "trace") return {kind:"flou", ref:z, cx:r.x, cy:r.y, hw:r.w/2, hh:r.h/2, rot:0, nohand:true, norot:true, hit:(q, m) => zoneHit(z, r, q, m)};
+    return {kind:"flou", ref:z, cx:r.x, cy:r.y, hw:r.w/2, hh:r.h/2, rot:r.rot};
+  }
   if(S.tab === "calques"){
     const l = p.cfg.calques.find(x => x.id === S.csel); if(!l || !l._box) return null;
     if(l.type === "zoom" && S.lsub === "zone" && !l.src) return Object.assign(zoneBox(p, l, o), {kind:"lzone", ref:l, norot:true});
@@ -1962,7 +2084,7 @@ function pick(p, q){
   const o = outSize(p);
   if(S.tab === "flous"){
     const zs = p.cfg.flous || [];
-    for(let i = zs.length - 1; i >= 0; i--){ const r = zoneOut(zs[i], p, o.W, o.H); if(inBox({cx:r.x, cy:r.y, hw:r.w/2, hh:r.h/2, rot:r.rot}, q, hx(6))) return zs[i].id; }
+    for(let i = zs.length - 1; i >= 0; i--){ const r = zoneOut(zs[i], p, o.W, o.H); if(zoneHit(zs[i], r, q, hx(zs[i].forme === "trace" ? 10 : 6))) return zs[i].id; }
   } else if(S.tab === "calques"){
     const ls = p.cfg.calques;
     for(let i = ls.length - 1; i >= 0; i--){ const l = ls[i]; if(l._box && inBox({cx:l.x*o.W, cy:l.y*o.H, hw:l._box.w/2, hh:l._box.h/2, rot:(l.rot || 0)*Math.PI/180}, q, hx(8))) return l.id; }
@@ -1983,6 +2105,12 @@ function applyGesture(p, b, o0, dx, dy, f, da){
     fixCadre(p);
   } else if(b.kind === "flou"){
     const z = b.ref, dd = deltaFromOut(p, dx, dy, o.W, o.H);   // le doigt bouge dans la sortie (inclinée), la zone en fraction de la source
+    if(z.forme === "trace"){
+      // trace : tous les points suivent le doigt ; pincer, la molette ou + et - règlent l'épaisseur ; pas de rotation
+      const r5 = v => Math.round(v*1e5)/1e5;
+      z.pts = o0.pts.map(pt => [r5(clamp(pt[0] + dd[0], -0.5, 1.5)), r5(clamp(pt[1] + dd[1], -0.5, 1.5))]); z.ep = f === 1 ? o0.ep : readEp(o0.ep*f);
+      return;
+    }
     z.x = clamp(o0.x + dd[0], 0, 1); z.y = clamp(o0.y + dd[1], 0, 1);
     z.w = clamp(o0.w*f, 0.02, 1.5); z.h = clamp(o0.h*f, 0.02, 1.5); z.angle = Math.round(o0.angle + da*180/Math.PI);
   } else if(b.kind === "bande"){
@@ -2033,7 +2161,7 @@ cv.addEventListener("pointerdown", e => {
   const p = selected(); if(!p) return;
   e.preventDefault(); cv.setPointerCapture(e.pointerId);
   const q = ptPos(e); G.ptrs.set(e.pointerId, q);
-  if(G.ptrs.size === 2 && G.act && G.act.kind === "lasso") return;   // le lasso se trace à un doigt
+  if(G.ptrs.size === 2 && G.act && (G.act.kind === "lasso" || G.act.kind === "pinceau")) return;   // le lasso et le pinceau se tracent à un doigt
   if(G.ptrs.size === 2 && G.act){
     // deuxième doigt : passe en pincement à partir de l'état courant
     const pts = Array.from(G.ptrs.values()), b = curObj(p);
@@ -2048,13 +2176,14 @@ cv.addEventListener("pointerdown", e => {
     if(hit !== S.zsel){ S.zsel = hit; renderPanel(); draw(); }
     return;
   }
+  if(S.tab === "flous" && S.pinceau){ G.act = {kind:"pinceau", pts:[q]}; draw(); return; }
   let b = curObj(p);
   const h = b && !b.nohand && handleAt(b, q, b.kind !== "cadre" && !b.norot);
   if(h){ G.act = {kind:h.h, b:b, o0:snapshot(b), start:q, d0:Math.max(1, Math.hypot(q.x - b.cx, q.y - b.cy)), a0:Math.atan2(q.y - b.cy, q.x - b.cx)}; return; }
   let picked = false;
   if(S.tab !== "cadre"){
     // l'objet déjà choisi garde la main s'il est sous le doigt ; sinon on prend celui qui s'y trouve
-    if(!(b && inBox(b, q, hx(8)))){
+    if(!(b && (b.hit ? b.hit(q, hx(10)) : inBox(b, q, hx(8))))){
       const id = pick(p, q);
       if(id){ if(S.tab === "flous") S.fsel = id; else if(S.tab === "montage") S.msel = +id; else { S.csel = id; S.lsub = "calque"; } picked = true; renderPanel(); draw(); b = curObj(p); }
       else { if(S.tab === "calques" && S.csel){ S.csel = null; renderPanel(); draw(); } return; }
@@ -2068,7 +2197,7 @@ cv.addEventListener("pointermove", e => {
   const p = selected(); if(!p) return;
   const q = ptPos(e); G.ptrs.set(e.pointerId, q);
   const a = G.act;
-  if(a.kind === "lasso"){ const l = a.pts[a.pts.length - 1]; if(Math.hypot(q.x - l.x, q.y - l.y) >= hx(3)) a.pts.push(q); draw(); return; }
+  if(a.kind === "lasso" || a.kind === "pinceau"){ const l = a.pts[a.pts.length - 1]; if(Math.hypot(q.x - l.x, q.y - l.y) >= hx(3)) a.pts.push(q); draw(); return; }
   if(a.kind === "pinch"){
     if(G.ptrs.size < 2) return;
     const pts = Array.from(G.ptrs.values()), c = {x:(pts[0].x + pts[1].x)/2, y:(pts[0].y + pts[1].y)/2};
@@ -2096,6 +2225,7 @@ function endPtr(e){
   if(G.ptrs.size === 0 && G.act){
     const a = G.act; G.act = null; const p = selected(); if(!p) return;
     if(a.kind === "lasso") endLasso(p, a.pts);
+    if(a.kind === "pinceau") endPinceau(p, a.pts);
     persist(p); renderPanel(); draw();
     if(S.tab === "calques" && a.kind === "move" && a.far < hx(6) && a.b.kind === "calque"){
       // toucher un calque : son réglage s'affiche ; deux touchers rapprochés ouvrent la saisie du texte
@@ -2192,7 +2322,10 @@ function dupLayer(p){
 }
 function dupZone(p){
   const z = (p.cfg.flous || []).find(x => x.id === S.fsel); if(!z) return false;
-  const n = Object.assign({}, z, {id:uid(), x:clamp(z.x + z.w*0.6, 0, 1)}); p.cfg.flous.push(n); S.fsel = n.id;
+  const n = Object.assign(JSON.parse(JSON.stringify(z, noPriv)), {id:uid()});
+  if(n.forme === "trace") n.pts = n.pts.map(pt => [clamp(pt[0] + 0.05, -0.5, 1.5), clamp(pt[1] + 0.05, -0.5, 1.5)]);   // copie décalée du trait
+  else n.x = clamp(z.x + z.w*0.6, 0, 1);
+  p.cfg.flous.push(n); S.fsel = n.id;
   return true;
 }
 /* Ctrl+D : le calque choisi (onglet Calques) ou la zone de flou choisie (onglet Flous) */
@@ -2215,7 +2348,10 @@ function rotatePhoto(p, right){
   const c = p.cfg;
   c.rotation = ((c.rotation || 0) + (right ? 90 : 270)) % 360; c.cadre = null; c.cadres = {}; fixCadre(p);   // les cadres des autres formats ne valent plus après un quart de tour
   if(isBandes(p)) c.montage.bandes.forEach(b => { if(photoOf(p, b.src) === p) b.cadre = null; });   // les bandes de cette photo repartent du cadre maximal
-  else c.flous.forEach(z => { const x = z.x, y = z.y; if(right){ z.x = 1 - y; z.y = x; } else { z.x = y; z.y = 1 - x; } const w = z.w; z.w = z.h; z.h = w; });
+  else c.flous.forEach(z => {
+    if(z.forme === "trace"){ z.pts = z.pts.map(pt => right ? [1 - pt[1], pt[0]] : [pt[1], 1 - pt[0]]); return; }   // comme le lasso ; ep (côté court) ne change pas
+    const x = z.x, y = z.y; if(right){ z.x = 1 - y; z.y = x; } else { z.x = y; z.y = 1 - x; } const w = z.w; z.w = z.h; z.h = w;
+  });
   if(c.selectif) c.selectif.zones.forEach(z => { z.pts = z.pts.map(pt => right ? [1 - pt[1], pt[0]] : [pt[1], 1 - pt[0]]); });
 }
 
@@ -2250,14 +2386,14 @@ $("film").addEventListener("click", e => {
   if(b.dataset.sel) select(b.dataset.sel);
 });
 function select(id){
-  S.sel = id; S.fsel = null; S.csel = null; S.lsub = "calque"; S.csrc = null; S.aaSrc = null; S.msel = 0; S.msub = "calque"; S.mview = "deux"; S.zsel = null; S.lasso = false; setOriginal(false);
+  S.sel = id; S.fsel = null; S.csel = null; S.lsub = "calque"; S.csrc = null; S.aaSrc = null; S.msel = 0; S.msub = "calque"; S.mview = "deux"; S.zsel = null; S.lasso = false; S.pinceau = false; setOriginal(false);
   const p = selected(); if(!p) return;
   $("pname").textContent = `${p.path}  ·  ${p.w} x ${p.h}`;
   renderFilm(); renderPanel(); draw();
   const th = $("film").querySelector(`[data-sel="${id}"]`); if(th && th.scrollIntoView) th.scrollIntoView({block:"nearest", inline:"nearest"});
 }
 function goTab(name){
-  S.tab = name; S.lasso = false;
+  S.tab = name; S.lasso = false; S.pinceau = false;
   Array.prototype.forEach.call($("tabs").children, t => t.setAttribute("aria-selected", t.dataset.tab === name));
   renderPanel(); draw();
 }
@@ -2364,14 +2500,27 @@ function renderPanel(){
       + range("Température (froid à chaud)", "col=\"temp\"", u.temp, -100, 100) + range("Vignettage", "col=\"vignette\"", u.vignette, 0, 100);
     h += `<div class="actions"><button type="button" class="btn small ghost" data-act="colReset">Réinitialiser</button><button type="button" class="btn small ghost" data-act="colAll"${S.photos.length > 1 ? "" : " disabled"}>Appliquer à toutes les photos</button>${q !== p ? `<button type="button" class="btn small ghost" data-act="colSame">Mêmes réglages que la photo de base</button>` : ""}</div>`;
   } else if(S.tab === "flous"){
-    const zs = c.flous || [], z = zs.find(x => x.id === S.fsel);
-    h += `<div class="grp"><span class="lbl">Zones floutées (visages, plaques, lieux)</span><div class="chips">${zs.map((x, i) => `<button type="button" class="chip" data-fsel="${x.id}" aria-pressed="${x === z}">Flou ${i + 1}</button>`).join("")}<button type="button" class="chip add" data-act="addZone">+ Ajouter une zone</button></div>`;
-    h += `<p class="hint">${zs.length ? "Glissez la zone sur ce qu'il faut cacher, pincez ou tirez la poignée jaune pour la taille, la poignée bleue pour l'orienter." : "Ajoutez une zone, puis glissez-la sur ce qu'il faut cacher."}</p></div>`;
+    const zs = c.flous || [], z = zs.find(x => x.id === S.fsel), b = S.brush;
+    h += `<div class="grp"><span class="lbl">Zones floutées (visages, plaques, lieux)</span><div class="chips">${zs.map((x, i) => `<button type="button" class="chip" data-fsel="${x.id}" aria-pressed="${x === z}">${x.forme === "trace" ? "Trait" : "Flou"} ${i + 1}</button>`).join("")}<button type="button" class="chip add" data-act="addZone">+ Ajouter une zone</button><button type="button" class="chip add" data-act="pinceau" aria-pressed="${S.pinceau}">${S.pinceau ? "Peignez sur l'aperçu (annuler)" : "Pinceau"}</button></div>`;
+    h += `<p class="hint">${S.pinceau ? "Peignez au doigt ou à la souris, d'un seul trait, sur ce qu'il faut flouter (un visage de profil, une plaque, un détail de forme libre)." : zs.length ? "Glissez la zone sur ce qu'il faut cacher, pincez ou tirez la poignée jaune pour la taille, la poignée bleue pour l'orienter. Un trait au pinceau se déplace d'un glissement ; son épaisseur se règle par le curseur." : "Ajoutez une zone, puis glissez-la sur ce qu'il faut cacher ; ou peignez la zone au pinceau."}</p></div>`;
+    if(S.pinceau){
+      h += `<div class="sub"><div class="grp"><span class="lbl">Pinceau : type de flou</span>${chips(MODES_FLOU, b.mode, "bmode")}</div>`;
+      h += `<div class="grp"><span class="lbl">Intensité</span>${chips([["1","Légère"],["2","Moyenne"],["3","Forte"]], String(b.force), "bforce")}</div>`;
+      h += range("Épaisseur du pinceau", "bep", Math.round(b.ep*100), Math.round(EP_MIN*100), Math.round(EP_MAX*100), " %") + `</div>`;
+    }
+    if(typeof window.FaceDetector === "function"){
+      h += `<div class="grp"><span class="lbl">Visages</span><div class="actions"><button type="button" class="btn small" data-act="faces"${isBandes(p) ? " disabled" : ""}>Trouver les visages</button></div>`;
+      h += `<p class="hint">${isBandes(p) ? "En bandeaux, floutez les visages à la main (la détection porte sur la photo elle-même)." : "Détection automatique, faite dans cet appareil (rien n'est envoyé) : chaque visage trouvé reçoit une zone de flou. Vérifiez le résultat et complétez à la main (visage de profil, caché ou lointain)."}</p></div>`;
+    }
     if(z){
+      const tr = z.forme === "trace";
       h += `<div class="sub"><div class="grp"><span class="lbl">Type de flou</span>${chips(MODES_FLOU, z.mode, "fmode")}<p class="hint">Doux : fondu discret. Pixelisé : mosaïque. Dynamique : filé dans le sens de l'orientation.</p></div>`;
       h += `<div class="grp"><span class="lbl">Intensité</span>${chips([["1","Légère"],["2","Moyenne"],["3","Forte"]], String(z.force), "fforce")}</div>`;
-      h += `<div class="grp"><span class="lbl">Forme</span>${chips([["ellipse","Ovale"],["rect","Rectangle"]], z.forme, "fforme")}</div>`;
-      h += range("Largeur", "fw", Math.round(z.w*100), 2, 100, " %") + range("Hauteur", "fh", Math.round(z.h*100), 2, 100, " %") + range("Orientation", "fa", Math.round(z.angle || 0), -90, 90, "°");
+      if(tr) h += range("Épaisseur", "fep", Math.round(z.ep*100), Math.round(EP_MIN*100), Math.round(EP_MAX*100), " %") + `<p class="hint">Trait au pinceau : glissez-le pour le déplacer ; pincez ou utilisez la molette pour l'épaissir.</p>`;
+      else {
+        h += `<div class="grp"><span class="lbl">Forme</span>${chips([["ellipse","Ovale"],["rect","Rectangle"]], z.forme, "fforme")}</div>`;
+        h += range("Largeur", "fw", Math.round(z.w*100), 2, 100, " %") + range("Hauteur", "fh", Math.round(z.h*100), 2, 100, " %") + range("Orientation", "fa", Math.round(z.angle || 0), -90, 90, "°");
+      }
       h += `<div class="actions"><button type="button" class="btn small ghost" data-act="dupZone">Dupliquer</button><button type="button" class="btn small ghost danger" data-act="delZone">Supprimer cette zone</button></div></div>`;
     }
   } else if(S.tab === "calques"){
@@ -2578,6 +2727,30 @@ function addZone(p){
   p.cfg.flous = (p.cfg.flous || []).concat([z]); S.fsel = z.id;
   toast("Zone ajoutée au centre : glissez-la sur ce qu'il faut cacher.");
 }
+/* visages trouvés par le navigateur (FaceDetector : Chrome sur Android, Chrome sur PC avec le drapeau ; détection locale,
+   rien n'est envoyé) sur l'image de travail p.img. Ses coordonnées sont celles de la source non tournée : elles sont
+   ramenées dans le repère des flous (source tournée de cfg.rotation, non inclinée ; l'inclinaison est appliquée au rendu).
+   Chaque visage devient une ellipse « doux » de force 2, agrandie de 40 % ; une seule entrée d'historique pour le lot. */
+const FACE_MARGE = 1.4;
+function faceZone(p, bb){
+  const W = p.img.width || p.w, H = p.img.height || p.h, r = p.cfg.rotation || 0;
+  const fx = (bb.x + bb.width/2)/W, fy = (bb.y + bb.height/2)/H, fw = bb.width/W, fh = bb.height/H;
+  const c = r === 90 ? [1 - fy, fx] : r === 180 ? [1 - fx, 1 - fy] : r === 270 ? [fy, 1 - fx] : [fx, fy], q = r % 180 ? [fh, fw] : [fw, fh];
+  return {id:uid(), forme:"ellipse", mode:"doux", force:2, x:clamp(c[0], 0, 1), y:clamp(c[1], 0, 1), w:clamp(q[0]*FACE_MARGE, 0.02, 1), h:clamp(q[1]*FACE_MARGE, 0.02, 1), angle:0};
+}
+async function findFaces(p){
+  if(typeof window.FaceDetector !== "function" || isBandes(p)) return;
+  const btn = $("panel").querySelector('[data-act="faces"]'); if(btn){ btn.disabled = true; btn.textContent = "Recherche..."; }
+  let faces = null;
+  try { faces = await new window.FaceDetector({fastMode:false, maxDetectedFaces:20}).detect(p.img); }
+  catch(e){ toast("Détection des visages impossible dans ce navigateur : floutez-les à la main avec « + Ajouter une zone »."); }
+  if(faces && selected() === p){
+    const zs = faces.filter(f => f && f.boundingBox && f.boundingBox.width > 0 && f.boundingBox.height > 0).map(f => faceZone(p, f.boundingBox));
+    if(zs.length){ p.cfg.flous = (p.cfg.flous || []).concat(zs); S.fsel = zs[0].id; S.pinceau = false; persist(p); draw(); }
+    toast(zs.length ? `${zs.length} visage(s) flouté(s)` : "Aucun visage trouvé.");
+  }
+  if(S.tab === "flous") renderPanel();
+}
 /* contenu de la loupe : une zone de la photo (q null) ou une autre photo ; la zone repart du centre */
 function setZoomSrc(p, l, q){
   const auto = !l.etiquette || Object.keys(KIND_LABEL).some(k => KIND_LABEL[k] === l.etiquette);
@@ -2620,7 +2793,8 @@ $("panel").addEventListener("click", e => {
   else if(d.ctarget){ S.csrc = d.ctarget === p.id ? null : d.ctarget; renderPanel(); draw(); return; }
   else if(d.ctab){ S.csrc = d.ctab === p.id ? null : d.ctab; goTab("couleur"); return; }
   else if(d.fsel){ S.fsel = d.fsel; }
-  else if(d.fmode || d.fforce || d.fforme){ const z = c.flous.find(x => x.id === S.fsel); if(z){ if(d.fmode) z.mode = d.fmode; if(d.fforce) z.force = +d.fforce; if(d.fforme) z.forme = d.fforme; } }
+  else if(d.fmode || d.fforce || d.fforme){ const z = c.flous.find(x => x.id === S.fsel); if(z){ if(d.fmode) z.mode = d.fmode; if(d.fforce) z.force = +d.fforce; if(d.fforme && z.forme !== "trace") z.forme = d.fforme; } }
+  else if(d.bmode || d.bforce){ if(d.bmode) S.brush.mode = d.bmode; else S.brush.force = clamp(+d.bforce || 2, 1, 3); renderPanel(); return; }
   else if(d.addl){
     addLayer(p, d.addl); persist(p); renderPanel(); draw();
     if(d.addl === "titre" || d.addl === "texte" || d.addl === "carte") focusEditor(); else revealEditor();   // on écrit tout de suite le texte
@@ -2662,7 +2836,16 @@ $("panel").addEventListener("click", e => {
     else if(a === "colSame"){ const q = colorTarget(p); if(q !== p){ copyColor(q.cfg, c, true); q.cache = {}; persist(q); } }
     else if(a === "lasso"){ S.lasso = !S.lasso; S.zsel = null; if(S.lasso) toast("Entourez la zone sur l'aperçu, d'un seul trait."); renderPanel(); draw(); return; }
     else if(a === "delLasso"){ if(!lassoOn(p)) return; c.selectif.zones = c.selectif.zones.filter(x => x.id !== S.zsel); S.zsel = null; }
-    else if(a === "addZone") addZone(p);
+    else if(a === "addZone"){ S.pinceau = false; addZone(p); }
+    else if(a === "pinceau"){
+      S.pinceau = !S.pinceau;
+      // le pinceau reprend le type, l'intensité (et l'épaisseur d'un trait) de la zone choisie
+      const z = S.pinceau && (c.flous || []).find(x => x.id === S.fsel);
+      if(z) S.brush = {mode:z.mode, force:z.force, ep:z.forme === "trace" ? z.ep : S.brush.ep};
+      if(S.pinceau) toast("Peignez sur l'aperçu, d'un seul trait, ce qu'il faut flouter.");
+      renderPanel(); draw(); return;
+    }
+    else if(a === "faces"){ findFaces(p); return; }
     else if(a === "dupZone") dupZone(p);
     else if(a === "ldup" && l){ dupLayer(p); persist(p); renderPanel(); draw(); revealEditor(); return; }
     else if((a === "lmonter" || a === "ldescendre") && l) moveLayer(p, l.id, a === "lmonter" ? 1 : -1);
@@ -2735,6 +2918,8 @@ $("panel").addEventListener("input", e => {
     clearTimeout(S.inputT); S.inputT = setTimeout(() => { S.inputT = 0; persist(p); }, 400);
     return;
   }
+  else if(d.bep !== undefined){ S.brush.ep = readEp(v/100); if(lbl) lbl.textContent = `${t.value}${d.unit || ""}`; return; }
+  else if(d.fep !== undefined){ const z = c.flous.find(x => x.id === S.fsel); if(!z || z.forme !== "trace") return; z.ep = readEp(v/100); }
   else if(d.fw !== undefined || d.fh !== undefined || d.fa !== undefined){ const z = c.flous.find(x => x.id === S.fsel); if(!z) return; if(d.fw !== undefined) z.w = v/100; if(d.fh !== undefined) z.h = v/100; if(d.fa !== undefined) z.angle = v; }
   else if(d.msep !== undefined){ c.montage.sep = v; }
   else if(d.metq !== undefined || d.mzoom !== undefined){
@@ -3208,7 +3393,9 @@ async function copyField(el){
    Une vidéo choisie (galerie, fichiers ou dossier) apparaît dans la pellicule ; un clic ouvre le dialogue #vdlg :
    lecture, curseur, pas d'une image ou d'une seconde, et « Capturer » qui dessine l'image courante en pleine
    résolution dans un canvas et l'ajoute comme photo (nom = vidéo + horodatage). Le décodage est celui du navigateur
-   (H.264 partout ; HEVC des iPhone selon l'appareil). */
+   (H.264 partout ; HEVC des iPhone selon l'appareil). Rafale : une image toutes les 0,5, 1, 2 ou 5 s entre un début et
+   une fin, 30 images au plus (le pas est alors agrandi), chaque instant atteint par un seek puis capturé par grabFrame
+   comme une image seule ; les images rejoignent la pellicule dans l'ordre, la première devient la photo choisie. */
 const FPS = 25;
 S.videos = [];
 async function addVideos(items){
@@ -3247,36 +3434,98 @@ function openVideo(id){
   VCUR = v; $("vname").textContent = v.path; $("vcount").textContent = v.n ? `${v.n} image(s) capturée(s)` : "";
   vel.src = v.url; vel.currentTime = 0; vrange.value = 0; $("vtime").textContent = "0:00.00";
   $("verr").hidden = true;
+  VB.a = VB.b = null; VB.stop = false; $("vbProg").hidden = true; burstUI();
   if(typeof vd.showModal === "function"){ if(!vd.open) vd.showModal(); } else vd.setAttribute("open", "");
 }
-vel.addEventListener("loadedmetadata", () => { vrange.max = vel.duration || 0; vrange.step = 1/FPS; $("vdur").textContent = tshow(vel.duration || 0); $("vres").textContent = `${vel.videoWidth} x ${vel.videoHeight}`; });
-vel.addEventListener("timeupdate", () => { if(!vel.seeking) vrange.value = vel.currentTime; $("vtime").textContent = tshow(vel.currentTime); });
-vel.addEventListener("seeked", () => { $("vtime").textContent = tshow(vel.currentTime); });
+vel.addEventListener("loadedmetadata", () => { vrange.max = vel.duration || 0; vrange.step = 1/FPS; $("vdur").textContent = tshow(vel.duration || 0); $("vres").textContent = `${vel.videoWidth} x ${vel.videoHeight}`; burstUI(); });
+vel.addEventListener("timeupdate", () => { if(!vel.seeking) vrange.value = vel.currentTime; $("vtime").textContent = tshow(vel.currentTime); burstUI(); });
+vel.addEventListener("seeked", () => { $("vtime").textContent = tshow(vel.currentTime); burstUI(); });
 vel.addEventListener("error", () => { $("verr").hidden = false; $("verr").textContent = "Ce navigateur ne sait pas lire cette vidéo (format ou codec). Essayez Chrome ou Edge, ou convertissez-la en MP4 H.264."; });
 vrange.addEventListener("input", () => { vel.pause(); vel.currentTime = +vrange.value; });
 function vstep(dt){ vel.pause(); vel.currentTime = clamp(vel.currentTime + dt, 0, vel.duration || 0); }
+/* image courante de la vidéo v en pleine résolution : JPEG avec les métadonnées ESAM (rien de la vidéo d'origine : lieu,
+   date, appareil), nommé vidéo + instant (DJI_0002_00m01s00.jpg) ; sert à « Capturer » et à la rafale */
+async function grabFrame(v){
+  if(!vel.videoWidth) throw new Error("vidéo pas encore chargée");
+  const t = vel.currentTime, c = mkCanvas(vel.videoWidth, vel.videoHeight); c.getContext("2d").drawImage(vel, 0, 0);
+  const raw = await toBlob(c, "image/jpeg", 0.95);
+  if(!raw) throw new Error("image vide (vidéo protégée ou non décodée)");
+  const blob = await withMeta(raw, metaPref());
+  const name = `${baseName(v.name)}_${tcode(t)}.jpg`, dirPart = v.path.split("/").slice(0, -1).join("/");
+  return {t:t, name:name, blob:blob, path:(dirPart ? `${dirPart}/` : "") + name, file:new File([blob], name, {type:"image/jpeg", lastModified:Date.now()})};
+}
+/* images capturées ajoutées à la pellicule dans l'ordre (la première devient la photo choisie) et au dossier de travail */
+async function keepFrames(v, fr){
+  v.n += fr.length; if(v === VCUR) $("vcount").textContent = `${v.n} image(s) capturée(s)`;
+  await addPhotos(fr.map(f => ({path:f.path, file:f.file})));
+  if(S.dirWritable) for(const f of fr){ try { await writeInDir(f.path, f.blob); } catch(err){} }   // les images extraites rejoignent le dossier de travail
+}
+/* rafale (VB, transitoire) : a et b = début et fin choisis (null : la position courante, et 10 s plus loin), pas en secondes */
+const VB_STEPS = [0.5, 1, 2, 5], VB_MAX = 30, VB_SPAN = 10;
+const VB = {a:null, b:null, step:2, run:false, stop:false, plan:null};
+function secFr(v){ return String(Math.round(v*100)/100).replace(".", ","); }
+function burstPlan(){
+  const d = isFinite(vel.duration) && vel.duration > 0 ? vel.duration : null, lim = v => d == null ? Math.max(0, v) : clamp(v, 0, d);
+  let a = lim(VB.a != null ? VB.a : vel.currentTime || 0), b = lim(VB.b != null ? VB.b : a + VB_SPAN);
+  if(b < a){ const t = a; a = b; b = t; }
+  let step = VB.step, fixed = false;
+  if(Math.floor((b - a)/step + 1e-6) + 1 > VB_MAX){ step = Math.ceil((b - a)/(VB_MAX - 1)*100)/100; fixed = true; }   // 30 images au plus
+  const n = Math.min(VB_MAX, Math.floor((b - a)/step + 1e-6) + 1);
+  return {a:a, b:b, step:step, fixed:fixed, n:n, times:Array.from({length:n}, (_, i) => Math.round((a + i*step)*1000)/1000)};
+}
+function burstUI(){
+  const r = VB.run && VB.plan ? VB.plan : burstPlan();
+  $("vbA").textContent = tshow(r.a); $("vbB").textContent = tshow(r.b);
+  Array.prototype.forEach.call(vd.querySelectorAll('[data-vact="bstep"]'), c => { c.setAttribute("aria-pressed", String(+c.dataset.s === VB.step)); c.disabled = VB.run; });
+  $("vbInfo").textContent = `${r.n} image${r.n > 1 ? "s" : ""}, une toutes les ${secFr(r.step)} s` + (r.fixed ? ` (pas porté à ${secFr(r.step)} s : ${VB_MAX} images au plus par rafale)` : "");
+  Array.prototype.forEach.call(vd.querySelectorAll('[data-vact="capture"], [data-vact="burst"], [data-vact="bstart"], [data-vact="bend"], [data-vact="step"], [data-vact="play"]'), c => { c.disabled = VB.run; });
+  vrange.disabled = VB.run; vd.querySelector('[data-vact="bstop"]').hidden = !VB.run;
+}
+/* va à l'instant t et attend l'image (événement seeked, 3 s au plus) */
+function seekTo(t){
+  return new Promise(res => {
+    let tm = 0;
+    const fin = () => { clearTimeout(tm); vel.removeEventListener("seeked", fin); res(); };
+    tm = setTimeout(fin, 3000); vel.addEventListener("seeked", fin);
+    vel.currentTime = t;
+  });
+}
+async function runBurst(){
+  if(VB.run) return;
+  if(!vel.videoWidth){ toast("Vidéo pas encore chargée."); return; }
+  const v = VCUR, r = burstPlan(), fr = [], prog = $("vbProg");
+  vel.pause(); VB.run = true; VB.stop = false; VB.plan = r; burstUI(); prog.hidden = false;
+  let err = null;
+  try {
+    for(let i = 0; i < r.n && !VB.stop; i++){
+      prog.textContent = `Image ${i + 1}/${r.n}`;
+      await seekTo(r.times[i]);
+      if(VB.stop) break;
+      fr.push(await grabFrame(v));
+    }
+  } catch(e){ err = e; }
+  const stopped = VB.stop;
+  try { if(fr.length) await keepFrames(v, fr); } catch(e){ err = err || e; }
+  VB.run = false; VB.plan = null; burstUI();
+  prog.textContent = `${stopped ? "Rafale arrêtée" : err ? "Rafale interrompue" : "Rafale terminée"} : ${fr.length}/${r.n} image(s) capturée(s)`;
+  toast(err ? `Rafale interrompue : ${err.message}` : `${fr.length} image(s) de la rafale ajoutée(s) à la pellicule.`);
+}
 vd.addEventListener("click", async e => {
   const b = e.target.closest("button"); if(!b) return;
   const a = b.dataset.vact;
-  if(a === "close"){ vel.pause(); vel.removeAttribute("src"); vel.load(); vd.close(); if(S.photos.length){ renderFilm(); if(!selected()) select(S.photos[0].id); } else if(!S.videos.length){ $("main").hidden = true; $("home").hidden = false; } return; }
+  if(a === "bstart" || a === "bend"){ VB[a === "bstart" ? "a" : "b"] = vel.currentTime || 0; burstUI(); return; }
+  if(a === "bstep"){ VB.step = VB_STEPS.indexOf(+b.dataset.s) >= 0 ? +b.dataset.s : 2; burstUI(); return; }
+  if(a === "burst"){ runBurst(); return; }
+  if(a === "bstop"){ VB.stop = true; return; }
+  if(a === "close"){ VB.stop = true; vel.pause(); vel.removeAttribute("src"); vel.load(); vd.close(); if(S.photos.length){ renderFilm(); if(!selected()) select(S.photos[0].id); } else if(!S.videos.length){ $("main").hidden = true; $("home").hidden = false; } return; }
   if(a === "play"){ if(vel.paused) vel.play(); else vel.pause(); return; }
   if(a === "step") { vstep(+b.dataset.dt); return; }
   if(a === "capture"){
     if(!vel.videoWidth){ toast("Vidéo pas encore chargée."); return; }
     vel.pause();
     b.disabled = true;
-    try {
-      const c = mkCanvas(vel.videoWidth, vel.videoHeight); c.getContext("2d").drawImage(vel, 0, 0);
-      const raw = await toBlob(c, "image/jpeg", 0.95);
-      if(!raw) throw new Error("image vide (vidéo protégée ou non décodée)");
-      const blob = await withMeta(raw, metaPref());      // rien de la vidéo d'origine (lieu, date, appareil) dans l'image extraite
-      const name = `${baseName(VCUR.name)}_${tcode(vel.currentTime)}.jpg`, file = new File([blob], name, {type:"image/jpeg", lastModified:Date.now()});
-      VCUR.n++; $("vcount").textContent = `${VCUR.n} image(s) capturée(s)`;
-      const dirPart = VCUR.path.split("/").slice(0, -1).join("/");
-      await addPhotos([{path:(dirPart ? `${dirPart}/` : "") + name, file:file}]);
-      if(S.dirWritable){ try { await writeInDir(`${dirPart ? `${dirPart}/` : ""}${name}`, blob); } catch(err){} }   // l'image extraite rejoint le dossier de travail
-      toast(`Image capturée à ${tshow(vel.currentTime)} : ${name}`);
-    } catch(err){ toast(`Capture impossible : ${err.message}`); }
+    try { const f = await grabFrame(VCUR); await keepFrames(VCUR, [f]); toast(`Image capturée à ${tshow(f.t)} : ${f.name}`); }
+    catch(err){ toast(`Capture impossible : ${err.message}`); }
     b.disabled = false;
   }
 });

@@ -646,7 +646,7 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
     rec.ondataavailable = e => chunks.push(e.data);
     const done = new Promise(r => { rec.onstop = r; });
     rec.start(); let t = 0;
-    await new Promise(r => { const it = setInterval(() => { x.fillStyle = `hsl(${t * 10},70%,50%)`; x.fillRect(0, 0, 640, 360); x.fillStyle = "#fff"; x.font = "40px sans-serif"; x.fillText("t=" + t, 40, 200); t++; if (t > 50) { clearInterval(it); r(); } }, 40); });
+    await new Promise(r => { const it = setInterval(() => { x.fillStyle = `hsl(${t * 10},70%,50%)`; x.fillRect(0, 0, 640, 360); x.fillStyle = "#fff"; x.font = "40px sans-serif"; x.fillText("t=" + t, 40, 200); t++; if (t > 80) { clearInterval(it); r(); } }, 40); });
     rec.stop(); await done;
     const blob = new Blob(chunks, { type: "video/webm" });
     return new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result.split(",")[1]); fr.readAsDataURL(blob); });
@@ -659,10 +659,28 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   await vpage.screenshot({ path: path.join(caps, `${label}_video.png`) });
   await vpage.click('[data-vact="capture"]');
   await vpage.waitForFunction(() => document.querySelectorAll("#film .th:not(.add):not(.vid)").length === 1);
-  await vpage.click('[data-vact="close"]');
-  check(await vpage.isVisible("#cv"), "image extraite de la vidéo, devenue une photo");
   const pn = await vpage.textContent("#pname");
   check(/DJI_0002_00m0[01]s\d\d\.jpg/.test(pn), `nom de l'image extraite : ${pn.trim()}`);
+  // Rafale : 3 images de 0,5 s à 2,5 s, une par seconde ; ajoutées dans l'ordre, la première devient la photo choisie
+  const vSeek = t => vpage.evaluate(t => new Promise(r => { const v = document.getElementById("vel"); v.addEventListener("seeked", () => r(), { once: true }); v.currentTime = t; }), t);
+  const vInfo0 = await vpage.textContent("#vbInfo"), vdur = await vpage.evaluate(() => document.getElementById("vel").duration);
+  check(await vpage.isVisible("#vburst") && /^\d+ images?, une toutes les 2 s/.test(vInfo0) && (await vpage.getAttribute('[data-vact="bstep"][data-s="2"]', "aria-pressed")) === "true", `bloc Rafale : pas de 2 s par défaut (${vInfo0}, durée ${vdur})`);
+  await vSeek(0.5); await vpage.click('[data-vact="bstart"]');
+  await vSeek(2.5); await vpage.click('[data-vact="bend"]');
+  await vpage.click('[data-vact="bstep"][data-s="1"]');
+  check((await vpage.textContent("#vbA")) === "0:00.50" && (await vpage.textContent("#vbB")) === "0:02.50" && (await vpage.textContent("#vbInfo")).startsWith("3 images, une toutes les 1 s"), "rafale : début 0,5 s, fin 2,5 s, pas de 1 s, 3 images annoncées");
+  await vpage.screenshot({ path: path.join(caps, `${label}_video_rafale.png`) });
+  const nFilm0 = await vpage.evaluate(() => document.querySelectorAll("#film .th:not(.add):not(.vid)").length);
+  await vpage.click('[data-vact="burst"]');
+  await vpage.waitForFunction(() => document.getElementById("vbProg").textContent.includes("/3")).catch(() => {});
+  const vprog = await vpage.textContent("#vbProg"), vstop = await vpage.isVisible('[data-vact="bstop"]');
+  await vpage.waitForFunction(n => document.querySelectorAll("#film .th:not(.add):not(.vid)").length === n + 3, nFilm0, { timeout: 20000 }).catch(() => {});
+  const vnames = await vpage.evaluate(() => Array.from(document.querySelectorAll("#film .th:not(.add):not(.vid)")).map(b => b.title));
+  check(/Image [123]\/3|Rafale terminée/.test(vprog) && (vstop || vprog.includes("terminée")), `progression de la rafale (« ${vprog} »), bouton Arrêter`);
+  check(vnames.slice(nFilm0).join() === "DJI_0002_00m00s50.jpg,DJI_0002_00m01s50.jpg,DJI_0002_00m02s50.jpg", `rafale : 3 photos aux bons instants, dans l'ordre (${vnames.slice(nFilm0).join(", ")})`);
+  check((await vpage.textContent("#pname")).includes("DJI_0002_00m00s50.jpg") && (await vpage.textContent("#vbProg")).includes("3/3") && !(await vpage.isVisible('[data-vact="bstop"]')), "la première image de la rafale devient la photo choisie");
+  await vpage.click('[data-vact="close"]');
+  check(await vpage.isVisible("#cv"), "images extraites de la vidéo, devenues des photos");
 
   // Grande photo de téléphone avec orientation EXIF 6 : décodée directement à la taille de travail, dans le bon sens
   const opage = await ctxB.newPage();
@@ -860,6 +878,163 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   const oldK = Object.assign({}, cfK2); delete oldK.carrousel;
   await ficheIn(oldK);
   check((await rpage.textContent("#tagFmt")).includes("3240 x 1080"), "fiche sans réglage de carrousel : 3 diapositives carrées par défaut");
+
+  // 0.15 : visages détectés (faux FaceDetector : Chromium sans tête n'en a pas), pinceau de flou (page à part, photo neuve)
+  const fpage = await ctxB.newPage();
+  fpage.on("pageerror", e => errors.push(String(e)));
+  fpage.on("console", m => { if (m.type() === "error") errors.push(m.text()); });
+  await fpage.addInitScript(() => {
+    window.FaceDetector = class {
+      constructor(o) { window.__fdOpts = o; }
+      async detect(img) {
+        window.__fdArg = [img.width, img.height, img.tagName];
+        if (window.__fdMode === "erreur") throw new Error("NotSupportedError");
+        if (window.__fdMode === "vide") return [];
+        // le « visage » de la photo de test (disque en 0.35, 0.45, rayon 144 px) et un second visage, en pixels de l'image de travail
+        return [{ boundingBox: { x: 416, y: 396, width: 288, height: 288 } }, { boundingBox: { x: 1000, y: 200, width: 160, height: 200 } }];
+      }
+    };
+  });
+  await fpage.goto(base);
+  const fA = await fakePhoto(ctxB, 1600, 1200, "VIS_A.jpg");
+  await fpage.setInputFiles("#fileIn", [fA]);
+  await fpage.waitForSelector("#main:not([hidden])");
+  // fiche de VIS_A.jpg écrite en dernier (deux pages du même contexte chargent la même photo : deux clés)
+  const lastCfg = pg => pg.evaluate(() => { const r = JSON.parse(localStorage.getItem("esam-picture:recentes") || "{}"), k = Object.keys(r).filter(k => k.startsWith("VIS_A.jpg|")).sort((a, b) => r[b] - r[a])[0]; return k ? JSON.parse(localStorage.getItem(`esam-picture:${k}`)) : null; });
+  const fCfg = () => lastCfg(fpage);
+  const fShot = () => fpage.evaluate(() => document.getElementById("cv").toDataURL());
+  const fToast = () => fpage.textContent("#toast");
+  const fNoToast = () => fpage.evaluate(() => { document.getElementById("toast").hidden = true; });
+  const setRangeP = (pg, sel, v) => pg.$eval(sel, (el, v) => { el.value = v; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); }, v);
+  const closeTo = (a, b, e = 1e-6) => Math.abs(a - b) < e;
+  const zoneIs = (z, x, y, w, h) => z && z.forme === "ellipse" && z.mode === "doux" && z.force === 2 && closeTo(z.x, x) && closeTo(z.y, y) && closeTo(z.w, w) && closeTo(z.h, h) && !z.angle;
+  /* écart moyen (0..255) entre deux images de l'aperçu sur un carré (fractions du canvas : centre fx, fy, demi-côté r) */
+  const regionDiff = (a, b, fx, fy, r) => fpage.evaluate(async ([a, b, fx, fy, r]) => {
+    const load = u => new Promise(res => { const i = new Image(); i.onload = () => res(i); i.src = u; });
+    const [ia, ib] = await Promise.all([load(a), load(b)]), W = ia.width, H = ia.height;
+    const data = im => { const c = document.createElement("canvas"); c.width = W; c.height = H; const x = c.getContext("2d"); x.drawImage(im, 0, 0); return x.getImageData(0, 0, W, H).data; };
+    const da = data(ia), db = data(ib), x0 = Math.max(0, Math.round((fx - r) * W)), x1 = Math.min(W, Math.round((fx + r) * W)), y0 = Math.max(0, Math.round((fy - r) * H)), y1 = Math.min(H, Math.round((fy + r) * H));
+    let s = 0, n = 0;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const i = (y * W + x) * 4; s += Math.abs(da[i] - db[i]) + Math.abs(da[i + 1] - db[i + 1]) + Math.abs(da[i + 2] - db[i + 2]); n += 3; }
+    return s / Math.max(1, n);
+  }, [a, b, fx, fy, r]);
+  await fpage.click('[data-tab="flous"]');
+  check(await fpage.isVisible('[data-act="faces"]') && (await fpage.textContent("#panel")).includes("rien n'est envoyé"), "bouton « Trouver les visages » et aide, FaceDetector présent");
+  // photo tournée d'un quart de tour : les visages (repérés dans l'image non tournée) sont ramenés dans le repère des flous
+  await fpage.keyboard.press("r"); await fpage.waitForTimeout(200);
+  await fpage.click('[data-act="faces"]'); await fpage.waitForTimeout(500);
+  let fc = await fCfg(), fd = await fpage.evaluate(() => [window.__fdOpts, window.__fdArg]);
+  check(fd[0] && fd[0].fastMode === false && fd[0].maxDetectedFaces === 20 && fd[1].join() === "1600,1200,CANVAS", "détection sur l'image de travail (fastMode faux, 20 visages au plus)");
+  check((await fToast()).includes("2 visage(s) flouté(s)") && fc.rotation === 90 && fc.flous.length === 2 && zoneIs(fc.flous[0], 0.55, 0.35, 0.336, 0.252) && zoneIs(fc.flous[1], 0.75, 0.675, 200 / 1200 * 1.4, 160 / 1600 * 1.4),
+    `photo tournée de 90° : deux ellipses « doux » agrandies de 40 % au bon endroit (${fc.flous.map(z => [z.x, z.y, z.w, z.h].map(v => v.toFixed(3)).join("/")).join(" ; ")})`);
+  await fpage.keyboard.press("Control+z"); await fpage.waitForTimeout(200);
+  fc = await fCfg();
+  check(fc.flous.length === 0 && fc.rotation === 90, "Ctrl+Z : les deux visages retirés d'un coup (une seule entrée d'historique)");
+  await fpage.keyboard.press("Control+z"); await fpage.waitForTimeout(200);
+  // horizon redressé : les zones restent dans la source non inclinée (le rendu leur applique l'inclinaison)
+  await fpage.click('[data-tab="cadre"]'); await setRangeP(fpage, "input[data-incl]", 4); await fpage.waitForTimeout(300);
+  await fpage.click('[data-tab="flous"]'); await fNoToast();
+  await fpage.click('[data-act="faces"]'); await fpage.waitForTimeout(500);
+  fc = await fCfg();
+  check(fc.rotation === 0 && fc.inclinaison === 4 && fc.flous.length === 2 && zoneIs(fc.flous[0], 0.35, 0.45, 0.252, 0.336) && zoneIs(fc.flous[1], 0.675, 0.25, 0.14, 200 / 1200 * 1.4), "horizon redressé : visages dans la source non inclinée");
+  await fpage.click('[data-tab="cadre"]'); await fpage.click('[data-act="incl0"]'); await fpage.waitForTimeout(200);
+  await fpage.click('[data-tab="flous"]'); await fpage.waitForTimeout(300);   // la vue « sortie » remplace la vue « cadre » à l'image suivante
+  // zones choisies au toucher, modifiables, supprimables comme les autres
+  // la scène est collante sous l'en-tête (téléphone) : sa place à l'écran est relue avant chaque geste
+  let fb = null; const fBox = async () => { fb = await fpage.locator("#cv").boundingBox(); }, fX = f => fb.x + fb.width * f, fY = f => fb.y + fb.height * f;
+  await fBox(); await fpage.mouse.click(fX((0.675 - 0.125) / 0.75), fY(0.25)); await fpage.waitForTimeout(200);
+  check((await fpage.getAttribute('[data-fsel]:nth-of-type(2)', "aria-pressed")) === "true", "second visage choisi au toucher");
+  await fpage.click('[data-fforce="3"]'); await fpage.waitForTimeout(200);
+  check((await fCfg()).flous[1].force === 3, "zone d'un visage modifiable (intensité forte)");
+  await fpage.click('[data-act="delZone"]'); await fpage.waitForTimeout(200);
+  check((await fCfg()).flous.length === 1, "zone d'un visage supprimable");
+  await fpage.evaluate(() => { window.__fdMode = "vide"; }); await fNoToast();
+  await fpage.click('[data-act="faces"]'); await fpage.waitForTimeout(400);
+  check((await fToast()).includes("Aucun visage trouvé") && (await fCfg()).flous.length === 1, "aucun visage : toast, rien d'ajouté");
+  await fpage.evaluate(() => { window.__fdMode = "erreur"; }); await fNoToast();
+  await fpage.click('[data-act="faces"]'); await fpage.waitForTimeout(400);
+  check((await fToast()).includes("impossible") && (await fCfg()).flous.length === 1 && !(await fpage.isDisabled('[data-act="faces"]')), "erreur de l'API : toast d'explication, aucun changement");
+  await fpage.evaluate(() => { window.__fdMode = ""; });
+
+  // Pinceau : un trait en L sur la plaque crée une zone « trace » ; l'aperçu change près du trait, pas loin
+  await fpage.click('[data-tab="calques"]'); await fpage.waitForTimeout(300);
+  const tr0 = await fShot();
+  await fpage.click('[data-tab="flous"]');
+  await fpage.click('[data-act="pinceau"]');
+  check((await fpage.getAttribute('[data-act="pinceau"]', "aria-pressed")) === "true" && await fpage.isVisible("input[data-bep]"), "mode pinceau activé (type, intensité, épaisseur du pinceau)");
+  await fBox(); await fpage.mouse.move(fX(0.6), fY(0.74)); await fpage.mouse.down();
+  await fpage.mouse.move(fX(0.92), fY(0.74), { steps: 12 }); await fpage.mouse.move(fX(0.92), fY(0.92), { steps: 6 });
+  await fpage.mouse.up(); await fpage.waitForTimeout(500);
+  fc = await fCfg();
+  let tz = fc.flous[fc.flous.length - 1];
+  check(fc.flous.length === 2 && tz.forme === "trace" && tz.pts.length >= 3 && tz.pts.length <= 400 && tz.ep === 0.08 && tz.mode === "doux" && tz.force === 2 && tz.x === undefined, `trait au pinceau : zone « trace » de ${tz.pts && tz.pts.length} points, épaisseur 0.08`);
+  check((await fpage.getAttribute('[data-act="pinceau"]', "aria-pressed")) === "false" && (await fpage.getAttribute('[data-fsel]:nth-of-type(2)', "aria-pressed")) === "true" && (await fpage.textContent('[data-fsel]:nth-of-type(2)')).includes("Trait"), "mode pinceau terminé, le trait est choisi");
+  check(Math.abs(tz.pts[0][0] - (0.125 + 0.6 * 0.75)) < 0.01 && Math.abs(tz.pts[0][1] - 0.74) < 0.01, `premier point en fraction de la source (${tz.pts[0].map(v => v.toFixed(3))})`);
+  await fpage.screenshot({ path: path.join(caps, `${label}_flous_pinceau.png`) });
+  await fpage.click('[data-tab="calques"]'); await fpage.waitForTimeout(300);
+  const tr1 = await fShot();
+  const dNear = await regionDiff(tr0, tr1, 0.76, 0.74, 0.03), dFar = await regionDiff(tr0, tr1, 0.06, 0.06, 0.04);
+  check(dNear > 4 && dFar === 0, `rendu flouté près du trait (écart ${dNear.toFixed(1)}), identique loin du trait (${dFar})`);
+  await fpage.click('[data-tab="flous"]');
+  // toucher dans la boîte du trait mais loin de lui : le trait n'est pas pris ; toucher le trait : il est choisi
+  await fpage.click('[data-fsel]:nth-of-type(1)');
+  await fBox(); await fpage.mouse.click(fX(0.66), fY(0.88)); await fpage.waitForTimeout(200);
+  const keep1 = await fpage.getAttribute('[data-fsel]:nth-of-type(1)', "aria-pressed");
+  await fBox(); await fpage.mouse.click(fX(0.8), fY(0.745)); await fpage.waitForTimeout(200);
+  check(keep1 === "true" && (await fpage.getAttribute('[data-fsel]:nth-of-type(2)', "aria-pressed")) === "true" && await fpage.isVisible("input[data-fep]") && !(await fpage.isVisible('[data-fforme]')), "trait choisi au toucher près du trait seulement ; curseur Épaisseur, pas de forme");
+  // déplacement : tous les points suivent le doigt ; cache par zone identique au rendu à froid
+  await fBox(); await fpage.mouse.move(fX(0.8), fY(0.74)); await fpage.mouse.down(); await fpage.mouse.move(fX(0.7), fY(0.74), { steps: 6 }); await fpage.mouse.up(); await fpage.waitForTimeout(400);
+  const tz2 = (await fCfg()).flous[1], dys = tz2.pts.map((pt, i) => pt[1] - tz.pts[i][1]), dxs = tz2.pts.map((pt, i) => pt[0] - tz.pts[i][0]);
+  check(tz2.pts.length === tz.pts.length && dxs[0] < -0.06 && dxs[0] > -0.09 && dxs.every(d => Math.abs(d - dxs[0]) < 2e-5) && dys.every(d => Math.abs(d) < 2e-5), `trait déplacé d'un bloc (dx=${dxs[0].toFixed(3)} en fraction de la source)`);
+  const trWarm = await fShot();
+  await fpage.keyboard.press("Control+z"); await fpage.waitForTimeout(200); await fpage.keyboard.press("Control+y"); await fpage.waitForTimeout(400);
+  check((await fShot()) === trWarm && JSON.stringify((await fCfg()).flous[1].pts) === JSON.stringify(tz2.pts), "trait : rendu avec le cache par zone identique au rendu à froid (annuler puis rétablir)");
+  await setRangeP(fpage, "input[data-fep]", 15); await fpage.waitForTimeout(600);
+  tz = (await fCfg()).flous[1];
+  check(tz.ep === 0.15 && JSON.stringify(tz.pts) === JSON.stringify(tz2.pts), "épaisseur du trait réglée au curseur (0.15)");
+  await fpage.screenshot({ path: path.join(caps, `${label}_flous_trait.png`) });
+  // export réel : dimensions exactes, à regarder (plaque floutée par le trait, visage par l'ellipse)
+  await fpage.click('[data-tab="export"]');
+  const [dlT] = await Promise.all([fpage.waitForEvent("download"), fpage.click('[data-act="export"]')]);
+  const tb = fs.readFileSync(await dlT.path()), tdm = jpgDims(tb);
+  fs.writeFileSync(path.join(caps, `${label}_export_pinceau.jpg`), tb);
+  check(tdm && tdm.join("x") === "1080x1080", `export avec un trait au pinceau : ${tdm && tdm.join("x")}`);
+  // fiche reprise dans une page vierge : même trait, même rendu ; lecture tolérante
+  await fpage.click('[data-tab="calques"]'); await fpage.waitForTimeout(300);
+  const trRef = await fShot(), ficheT = await fCfg();
+  const tpage = await ctxB.newPage();
+  tpage.on("pageerror", e => errors.push(String(e)));
+  await tpage.goto(base);
+  await tpage.setInputFiles("#fileIn", [fA]); await tpage.waitForSelector("#main:not([hidden])");
+  const tFiche = o => tpage.setInputFiles("#ficheIn", [{ name: "VIS_A.jpg.esam.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(o)) }]).then(() => tpage.waitForTimeout(500));
+  const tCfg = () => lastCfg(tpage);
+  await tFiche(ficheT);
+  await tpage.click('[data-tab="calques"]'); await tpage.waitForTimeout(300);
+  const rt = (await tCfg()).flous;
+  check(rt.length === 2 && rt[1].forme === "trace" && rt[1].ep === 0.15 && JSON.stringify(rt[1].pts) === JSON.stringify(tz.pts) && (await tpage.evaluate(() => document.getElementById("cv").toDataURL())) === trRef, "fiche reprise : trait retrouvé, même rendu au pixel près");
+  await tpage.click('[data-tab="flous"]');
+  check(!(await tpage.$('[data-act="faces"]')), "sans FaceDetector, pas de bouton « Trouver les visages »");
+  await tFiche(Object.assign({}, ficheT, { flous: [{ forme: "trace", pts: [[0.1, 0.1]] }, { forme: "trace", pts: [[0.1, 0.1], [0.2, "x"], null, [0.3, 0.3]], ep: 9, force: 7 }, { forme: "inconnue", x: 0.5 }] }));
+  const rt2 = (await tCfg()).flous;
+  check(rt2 && rt2.length === 2 && rt2[0].forme === "trace" && rt2[0].pts.length === 2 && rt2[0].ep === 0.3 && rt2[0].force === 3 && rt2[1].forme === "ellipse", `fiche tolérante : trace sans points valides ignorée, points illisibles écartés, épaisseur et intensité bornées (${JSON.stringify(rt2)})`);
+  await tpage.close();
+  // touche R : les points du trait tournent avec la photo (comme le lasso), le flou reste sur le même contenu
+  await fpage.click('[data-tab="flous"]');
+  await fpage.keyboard.press("r"); await fpage.waitForTimeout(300);
+  fc = await fCfg(); const tz3 = fc.flous[1];
+  check(fc.rotation === 90 && tz3.ep === 0.15 && tz3.pts.every((pt, i) => closeTo(pt[0], 1 - tz.pts[i][1], 1e-9) && closeTo(pt[1], tz.pts[i][0], 1e-9)), "touche R : points du trait tournés avec la photo, épaisseur gardée");
+  // point de la plaque sous le trait (source (0.68, 0.74) avant rotation), là où il se trouve après rotation
+  const cd = fc.cadre, mo = [(1 - 0.74 - cd.x) / cd.w, (0.68 - cd.y) / cd.h];
+  await fpage.click('[data-tab="calques"]'); await fpage.waitForTimeout(300);
+  const rotT = await fShot();
+  await fpage.click('[data-tab="flous"]'); await fpage.click('[data-fsel]:nth-of-type(2)'); await fpage.keyboard.press("Delete"); await fpage.waitForTimeout(200);
+  await fpage.click('[data-tab="calques"]'); await fpage.waitForTimeout(300);
+  const rotN = await fShot();
+  const rNear = await regionDiff(rotT, rotN, mo[0], mo[1], 0.03), rFar = await regionDiff(rotT, rotN, 0.94, 0.06, 0.04);
+  check((await fCfg()).flous.length === 1 && rNear > 4 && rFar === 0, `après rotation, le flou du trait reste sur son contenu (écart ${rNear.toFixed(1)} au trait, ${rFar} loin)`);
+  await fpage.keyboard.press("Control+z"); await fpage.waitForTimeout(200);
+  check((await fCfg()).flous.length === 2, "trait supprimé par Suppr, rétabli par Ctrl+Z");
+  await fpage.close();
 
   check(errors.length === 0, `aucune erreur de page (${errors.join(" | ").slice(0, 300)})`);
   await ctxB.close();
