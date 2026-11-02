@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "app": "esam-picture",
+  "fichier": "REF.jpg",
+  "format": "carre",
+  "cadre": { "x": 0.15, "y": 0.05, "w": 0.675, "h": 0.9 },
+  "rotation": 0,
+  "inclinaison": 3,
+  "couleur": { "lum": 0, "contraste": 0, "sat": 0, "temp": 0, "vignette": 0 },
+  "filtre": "esam",
+  "selectif": { "actif": false, "teintes": ["jaune", "rouge"], "tolerance": 50, "seuil": 35, "renfort": 20, "zones": [] },
+  "flous": [
+    { "id": "ref-flou-visage", "forme": "ellipse", "mode": "doux", "force": 3, "x": 0.35, "y": 0.45, "w": 0.24, "h": 0.32, "angle": 0 },
+    { "id": "ref-flou-plaque", "forme": "trace", "mode": "pixel", "force": 3, "pts": [[0.61, 0.735], [0.67, 0.74], [0.73, 0.742], [0.79, 0.745], [0.84, 0.75]], "ep": 0.09 }
+  ],
+  "calques": [
+    { "id": "ref-logo", "type": "logo", "x": 0.5, "y": 0.1, "s": 1, "rot": 0, "ex": 1, "ey": 1, "mode": "cartouche" },
+    { "id": "ref-titre", "type": "titre", "x": 0.5, "y": 0.27, "s": 1, "rot": 0, "ex": 1, "ey": 1, "texte": "Sauvetage au col", "couleur": "#FFFFFF", "fond": "ombre" },
+    { "id": "ref-legende", "type": "legende", "x": 0.5, "y": 0.86, "s": 1, "rot": 0, "ex": 1, "ey": 1, "animal": "Rex", "date": "2024-05-01", "secteur": "Belledonne", "couleur": "#F9DD10" },
+    { "id": "ref-fleche", "type": "fleche", "x": 0.62, "y": 0.42, "s": 1, "rot": 150, "ex": 1, "ey": 1, "couleur": "#F9DD10", "epais": 2 },
+    { "id": "ref-cercle", "type": "cercle", "x": 0.3, "y": 0.47, "s": 0.9, "rot": 0, "ex": 1, "ey": 1, "couleur": "#E20C0F", "epais": 2, "ar": 1.3 },
+    { "id": "ref-loupe", "type": "zoom", "x": 0.8, "y": 0.5, "s": 0.8, "rot": 0, "ex": 1, "ey": 1, "src": null, "zone": { "x": 0.66, "y": 0.74, "w": 0.12 }, "forme": "cercle", "ar": 1, "hr": 1, "couleur": "#F9DD10", "epais": 2, "lien": true, "etiquette": "Zoom" },
+    { "id": "ref-signature", "type": "signature", "x": 0.36, "y": 0.95, "s": 1, "rot": 0, "ex": 1, "ey": 1, "texte": "Équipe de Secours Animalier en Montagne", "couleur": "#FFFFFF" },
+    { "id": "ref-coin", "type": "coin", "x": 0.95, "y": 0.95, "s": 1, "rot": 0, "couleur": "#171618", "coin": "bd" }
+  ],
+  "grille": { "aimant": true, "n": 12 },
+  "montage": { "mode": "aucun", "sens": "v", "sep": 6, "sepCouleur": "#FFFFFF", "bandes": [], "fusion": null },
+  "meta": { "auteur": "ESAM - Équipe de Secours Animalier en Montagne", "droits": "© ESAM - Équipe de Secours Animalier en Montagne", "description": "" },
+  "nom": { "date": "", "animaux": "", "secteur": "", "heure": "" },
+  "cadres": { "carre": { "x": 0.15, "y": 0.05, "w": 0.675, "h": 0.9 } },
+  "pub": { "texte": "", "alt": "" },
+  "carrousel": { "n": 3, "forme": "carre" }
+}

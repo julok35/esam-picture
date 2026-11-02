@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "app": "esam-picture",
+  "fichier": "DJI_0001.jpg",
+  "format": "portrait",
+  "cadre": { "x": 0.2, "y": 0, "w": 0.6, "h": 1 },
+  "rotation": 0,
+  "couleur": { "lum": 10, "contraste": 8, "sat": -5, "temp": 12, "vignette": 20 },
+  "filtre": "chaud",
+  "flous": [
+    { "id": "f01a", "forme": "ellipse", "mode": "doux", "force": 2, "x": 0.35, "y": 0.45, "w": 0.18, "h": 0.24, "angle": 0 },
+    { "id": "f01b", "forme": "rect", "mode": "pixel", "force": 3, "x": 0.72, "y": 0.74, "w": 0.25, "h": 0.08, "angle": 0 }
+  ],
+  "calques": [
+    { "id": "c01a", "type": "logo", "x": 0.5, "y": 0.1, "s": 1, "rot": 0, "mode": "cartouche" },
+    { "id": "c01b", "type": "titre", "x": 0.5, "y": 0.3, "s": 1.2, "rot": 0, "texte": "Sauvetage au col", "couleur": "#FFFFFF", "fond": "ombre" },
+    { "id": "c01c", "type": "texte", "x": 0.5, "y": 0.55, "s": 0.9, "rot": 0, "texte": "Chienne bloquée sur une vire", "couleur": "#FFFFFF", "fond": "bande" },
+    { "id": "c01d", "type": "legende", "x": 0.5, "y": 0.9, "s": 1, "rot": 0, "animal": "Rex", "date": "2024-05-01", "secteur": "Belledonne", "couleur": "#F9DD10" },
+    { "id": "c01e", "type": "fleche", "x": 0.4, "y": 0.6, "s": 1, "rot": 35, "couleur": "#F9DD10", "epais": 2 },
+    { "id": "c01f", "type": "cercle", "x": 0.35, "y": 0.45, "s": 0.8, "rot": 0, "couleur": "#E20C0F", "epais": 3 }
+  ]
+}

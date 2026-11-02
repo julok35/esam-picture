@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "app": "esam-picture",
+  "fichier": "DJI_0001.jpg",
+  "format": "paysage",
+  "cadre": { "x": 0, "y": 0.2, "w": 1, "h": 0.698 },
+  "rotation": 0,
+  "inclinaison": 1.5,
+  "couleur": { "lum": 0, "contraste": 8, "sat": 4, "temp": 6, "vignette": 12 },
+  "filtre": "esam",
+  "selectif": { "actif": false, "teintes": ["jaune", "rouge"], "tolerance": 50, "seuil": 35, "renfort": 20, "zones": [] },
+  "flous": [],
+  "calques": [
+    { "id": "c13a", "type": "logo", "x": 0.5, "y": 0.1, "s": 1, "rot": 0, "ex": 1, "ey": 1, "mode": "cartouche" },
+    { "id": "c13b", "type": "titre", "x": 0.5, "y": 0.45, "s": 1, "rot": 0, "ex": 1, "ey": 1, "texte": "Merci aux pisteurs", "couleur": "#FFFFFF", "fond": "ombre" }
+  ],
+  "grille": { "aimant": true, "n": 12 },
+  "montage": { "mode": "aucun", "sens": "v", "sep": 6, "sepCouleur": "#FFFFFF", "bandes": [], "fusion": null },
+  "meta": { "auteur": "ESAM - Équipe de Secours Animalier en Montagne", "droits": "© ESAM - Équipe de Secours Animalier en Montagne", "description": "Remerciements" },
+  "nom": { "date": "2024-08-03", "animaux": "Filou", "secteur": "Oisans", "heure": "" },
+  "cadres": {
+    "carre": { "x": 0.2, "y": 0.1, "w": 0.6, "h": 0.8 },
+    "portrait": { "x": 0.25, "y": 0, "w": 0.6, "h": 1 },
+    "story": { "x": 0.33, "y": 0, "w": 0.42, "h": 1 },
+    "paysage": { "x": 0, "y": 0.2, "w": 1, "h": 0.698 }
+  },
+  "pub": {
+    "texte": "Merci aux pisteurs de la station.\nFilou a été secouru le 3 août 2024 dans le secteur Oisans par l'ESAM.\n\nÉquipe de Secours Animalier en Montagne\n#ESAM #SecoursAnimalier #Montagne",
+    "alt": "Photo ESAM : Filou secouru le 3 août 2024 dans le secteur Oisans"
+  }
+}
