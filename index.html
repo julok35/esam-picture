@@ -160,6 +160,17 @@ input[type=range]:focus-visible{outline:none}
 .card.ok{border-color:#2fa75a}
 .kv{font-size:13px;color:var(--muted);margin:6px 0}
 .kv b{color:var(--ink)}
+/* bloc repliable (Carrousel de l'onglet Export) et modèles de mise en page (onglet Calques) */
+details.sub>summary{font-weight:700;font-size:13px;margin:6px 0;min-height:36px;display:flex;align-items:center;gap:8px;cursor:pointer;list-style:none}
+details.sub>summary::-webkit-details-marker{display:none}
+details.sub>summary::before{content:"";width:0;height:0;border-left:7px solid currentColor;border-top:5px solid transparent;border-bottom:5px solid transparent;transition:transform .15s}
+details.sub[open]>summary::before{transform:rotate(90deg)}
+.mods{list-style:none;margin:8px 0 0;padding:0}
+.mod{border-top:1px solid var(--line);padding:8px 0 2px}
+.mod .mhead b{display:block;font-size:14px}
+.mod .mhead small{display:block;font-size:12px;color:var(--muted)}
+.mod .actions{margin-top:6px;gap:6px}
+.mod .ckl{margin-top:4px}
 
 /* ---------- dialogue vidéo (extraction d'images) ---------- */
 dialog{border:0;border-radius:14px;padding:0;background:var(--bg);color:var(--ink);width:min(96vw,760px);max-height:94vh}
@@ -278,6 +289,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
   </div>
 </dialog>
 <input type="file" id="dirIn" webkitdirectory multiple>
+<input type="file" id="modeleIn" accept=".json,application/json" multiple>
 <div class="toast" id="toast" hidden role="status"></div>
 <img id="logoImg" alt="" hidden>
 
@@ -287,7 +299,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 /* Photos ESAM : préparation d'images pour les réseaux sociaux. Un seul fichier, pas de build, ES2017.
    Sections : utils, modèle, formats, chargement, dossier de travail, rendu (base, couleur, flous, calques),
    aperçu et interactions, panneaux, export, démarrage. Voir docs/ARCHITECTURE.md. */
-const APP_VERSION = "0.13";
+const APP_VERSION = "0.14";
 /* pied standard du texte de publication proposé (onglet Export, bouton « Proposer ») : à modifier ici */
 const PUB_PIED = "Équipe de Secours Animalier en Montagne\n#ESAM #SecoursAnimalier #Montagne";
 const $ = id => document.getElementById(id);
@@ -352,15 +364,19 @@ function wrapLines(ctx, txt, maxW){
      montage {mode, sens, sep, sepCouleur, bandes, fusion} : composition avec d'autres photos chargées (voir « rendu : montage »),
      cadres {carre, portrait, story, paysage, large} : dernier cadre réglé pour chaque format (repris quand on revient à ce
        format, et pour les déclinaisons de l'onglet Export) ; vide dans une fiche d'avant 0.13,
-     pub {texte, alt} : texte de publication (2000 caractères) et texte alternatif (250), écrits dans le .txt joint à l'export. */
+     pub {texte, alt} : texte de publication (2000 caractères) et texte alternatif (250), écrits dans le .txt joint à l'export,
+     carrousel {n, forme} : format « Carrousel » (bande panoramique de n diapositives de 1080 px, carrées ou portrait 4:5),
+       n de 2 à 5 (3 par défaut), forme carre|portrait ; voir fmtById et unitOf.
+   Les modèles de mise en page (onglet Calques) sont gardés dans localStorage (esam-picture:modeles), pas dans la fiche. */
 const pendingFiches = {};   // fiches importées avant leurs photos, par nom de fichier
-const S = {photos:[], sel:null, tab:"cadre", mode:"calques", dirHandle:null, dirWritable:false, fsel:null, csel:null, lsub:"calque", csrc:null, msel:0, msub:"calque", mview:"deux", zsel:null, lasso:false, original:false, quick:false, secteurs:[]};   // original : bouton « Original » maintenu ; quick : aperçu allégé pendant le glissement d'un curseur (transitoires, jamais dans la fiche)
+const S = {photos:[], sel:null, tab:"cadre", mode:"calques", dirHandle:null, dirWritable:false, fsel:null, csel:null, lsub:"calque", csrc:null, msel:0, msub:"calque", mview:"deux", zsel:null, lasso:false, original:false, quick:false, secteurs:[], carrousel:false, aaSrc:null};   // original : bouton « Original » maintenu ; quick : aperçu allégé pendant le glissement d'un curseur ; carrousel : bloc Carrousel déplié (lignes de coupe sur l'aperçu) ; aaSrc : photo « Après » choisie (transitoires, jamais dans la fiche)
 const FORMATS = [
   {id:"carre", nom:"Carré 1:1", res:"Instagram, Facebook, LinkedIn", w:1080, h:1080},
   {id:"portrait", nom:"Portrait 4:5", res:"Instagram, Facebook", w:1080, h:1350},
   {id:"story", nom:"Story 9:16", res:"Instagram, Facebook", w:1080, h:1920},
   {id:"paysage", nom:"Paysage 1.91:1", res:"Facebook, LinkedIn", w:1200, h:628},
   {id:"large", nom:"Large 16:9", res:"LinkedIn, YouTube", w:1920, h:1080},
+  {id:"carrousel", nom:"Carrousel", res:"Instagram, panorama en diapositives", w:3240, h:1080, carrousel:true},   // w et h : voir fmtById (n x 1080 sur 1080 ou 1350)
   {id:"original", nom:"Original", res:"sans recadrage", w:0, h:0}
 ];
 const FILTRES = [
@@ -382,7 +398,25 @@ const TYPES = {logo:"Logo ESAM", titre:"Titre", texte:"Texte", legende:"Légende
 const PHOTO_T = ["logo", "titre", "texte", "legende", "fleche", "cercle", "zoom"], DECOR_T = ["signature", "montagne", "biais", "coin", "carte"];
 const COINS = {bd:0, bg:90, hg:180, hd:270};   // coin occupé -> rotation du motif (dessiné pour le coin bas droite)
 const GRILLES = [6, 12, 24];                   // nombre de colonnes de la grille magnétique
-function fmtOf(cfg){ return FORMATS.find(f => f.id === cfg.format) || FORMATS[0]; }
+/* carrousel Instagram : n diapositives (2 à 5) de 1080 x 1080 (carre) ou 1080 x 1350 (portrait) ; lecture tolérante */
+const CAR_MIN = 2, CAR_MAX = 5, SLIDE_W = 1080, SLIDE_H = {carre:1080, portrait:1350};
+function readCarrousel(x){
+  const n = x && x.n != null ? Math.round(+x.n) : 3;
+  return {n:clamp(n || 3, CAR_MIN, CAR_MAX), forme:x && x.forme === "portrait" ? "portrait" : "carre"};
+}
+/* format par son id, dimensions effectives : le carrousel a un ratio qui dépend de cfg.carrousel (w = n x 1080,
+   h = 1080 ou 1350, n = nombre de diapositives) ; les autres formats sont ceux de FORMATS */
+function fmtById(id, cfg){
+  const f = FORMATS.find(x => x.id === id) || FORMATS[0];
+  if(!f.carrousel) return f;
+  const k = readCarrousel(cfg && cfg.carrousel);
+  return Object.assign({}, f, {w:k.n*SLIDE_W, h:SLIDE_H[k.forme], n:k.n, forme:k.forme, nom:`Carrousel ${k.n} x ${k.forme === "portrait" ? "portrait" : "carré"}`});
+}
+function fmtOf(cfg){ return fmtById(cfg.format, cfg); }
+/* unité des tailles dessinées (calques, étiquettes, séparateurs, flous) dans un rendu W x H : u = W/1080, sauf pour le
+   carrousel où u = H/1080 (carré) ou H/1350 (portrait), soit la largeur d'une diapositive divisée par 1080 : un calque y a
+   la même taille que sur une photo carrée ou portrait. Seule définition de u, pour l'aperçu comme pour l'export. */
+function unitOf(p, W, H){ const f = p ? fmtOf(p.cfg) : null; return f && f.n ? H/f.h : W/1080; }
 function outSize(p){
   const f = fmtOf(p.cfg), sw = srcW(p), sh = srcH(p);
   if(f.w) return {W:f.w, H:f.h};
@@ -392,7 +426,7 @@ function srcW(p){ return p.cfg.rotation % 180 ? p.h : p.w; }
 function srcH(p){ return p.cfg.rotation % 180 ? p.w : p.h; }
 function newCfg(name){
   return {version:1, app:"esam-picture", fichier:name, format:"carre", cadre:null, rotation:0, inclinaison:0,
-    couleur:{lum:0, contraste:0, sat:0, temp:0, vignette:0}, filtre:"aucun", selectif:readSelectif(null), flous:[], calques:[], montage:newMontage(), grille:gridPref(), meta:readMeta(metaPref()), nom:readNom(null), cadres:{}, pub:readPub(null)};
+    couleur:{lum:0, contraste:0, sat:0, temp:0, vignette:0}, filtre:"aucun", selectif:readSelectif(null), flous:[], calques:[], montage:newMontage(), grille:gridPref(), meta:readMeta(metaPref()), nom:readNom(null), cadres:{}, pub:readPub(null), carrousel:readCarrousel(null)};
 }
 /* texte de publication et texte alternatif (accessibilité) : lecture tolérante (fiche d'avant 0.13 : vides) */
 const PUB_MAX = 2000, ALT_MAX = 250;
@@ -473,11 +507,23 @@ function fixCadre(p){
 }
 /* cadre d'un format : le dernier réglé pour ce format s'il existe, sinon le cadre maximal centré sur le cadre courant */
 function cadreFor(p, id){
-  const f = FORMATS.find(x => x.id === id) || FORMATS[0], c = p.cfg, k = c.cadres && c.cadres[id];
+  const f = fmtById(id, p.cfg), c = p.cfg, k = c.cadres && c.cadres[id];
   if(!f.w) return {x:0, y:0, w:1, h:1};
+  if(k && f.n) return fitAround({x:k.x, y:k.y, w:k.w, h:k.h}, srcW(p), srcH(p), f.w/f.h);   // carrousel : le nombre de diapositives a pu changer
   if(k) return {x:k.x, y:k.y, w:k.w, h:k.h};
   const m = maxCadreFor(srcW(p), srcH(p), f.w/f.h), cur = c.cadre || {x:0, y:0, w:1, h:1}, cx = cur.x + cur.w/2, cy = cur.y + cur.h/2;
   return {x:clamp(cx - m.w/2, 0, 1 - m.w), y:clamp(cy - m.h/2, 0, 1 - m.h), w:m.w, h:m.h};
+}
+/* impose le ratio r à un cadre en gardant son centre (carrousel dont le nombre de diapositives ou la forme change) */
+function fitAround(c, sw, sh, r){
+  const cx = c.x + c.w/2, cy = c.y + c.h/2;
+  fitCadre(c, sw, sh, r); c.x = clamp(cx - c.w/2, 0, 1 - c.w); c.y = clamp(cy - c.h/2, 0, 1 - c.h);
+  return c;
+}
+/* réglage du carrousel (nombre de diapositives, forme) : au format Carrousel, le cadre garde son centre */
+function setCarrousel(p, k){
+  const c = p.cfg; c.carrousel = readCarrousel(Object.assign({}, c.carrousel, k));
+  if(c.format === "carrousel"){ const f = fmtOf(c); c.cadre = fitAround(c.cadre || maxCadre(p), srcW(p), srcH(p), f.w/f.h); fixCadre(p); }
 }
 /* changement de format : le cadre de ce format est repris (cfg.cadres) ou recalculé */
 function setFormat(p, id){ const c = p.cfg; c.cadre = cadreFor(p, id); c.format = id; fixCadre(p); }
@@ -556,21 +602,27 @@ function applyCfg(p, d){
   c.selectif = readSelectif(d.selectif);
   c.flous = (Array.isArray(d.flous) ? d.flous : []).map(z => ({id:z.id || uid(), forme:z.forme === "rect" ? "rect" : "ellipse", mode:MODES_FLOU.some(m => m[0] === z.mode) ? z.mode : "doux",
     force:clamp(+z.force || 2, 1, 3), x:clamp(+z.x || 0.5, 0, 1), y:clamp(+z.y || 0.5, 0, 1), w:clamp(+z.w || 0.2, 0.02, 1), h:clamp(+z.h || 0.2, 0.02, 1), angle:+z.angle || 0}));
-  c.calques = (Array.isArray(d.calques) ? d.calques : []).filter(l => TYPES[l.type]).map(l => Object.assign(defLayer(l.type), l.type === "texte" && l.larg == null ? {larg:0.9} : {}, l, {id:l.id || uid(), x:clamp(+l.x || 0.5, -0.2, 1.2), y:clamp(+l.y || 0.5, -0.2, 1.2), s:clamp(+l.s || 1, 0.2, 5), rot:+l.rot || 0, ex:clamp(+l.ex || 1, 0.2, 5), ey:clamp(+l.ey || 1, 0.2, 5)}));
-  c.calques.forEach(l => { if(l.hr != null) l.hr = clamp(+l.hr || 1, 0.3, 3); });
-  c.calques.filter(l => l.type === "zoom").forEach(l => {
-    const z = l.zone && typeof l.zone === "object" ? l.zone : {}, old = l.hr == null;   // fiche d'avant 0.7 : la loupe ronde ignorait ar, le rectangle faisait 420 x 420 unités
-    l.src = typeof l.src === "string" && l.src ? clean(l.src) : null; l.zone = {x:clamp(+z.x || 0.5, 0, 1), y:clamp(+z.y || 0.5, 0, 1), w:clamp(+z.w || 0.18, 0.02, 1)};
-    l.forme = l.forme === "rect" ? "rect" : "cercle"; l.ar = clamp(old ? (l.forme === "rect" ? (+l.ar || 1.4)*420/560 : 1) : +l.ar || 1, 0.3, 3); l.hr = clamp(old ? (l.forme === "rect" ? 420/400 : 1) : +l.hr || 1, 0.3, 3); l.epais = clamp(Math.round(+l.epais) || 2, 0, 3); l.lien = l.lien !== false; l.etiquette = clean(l.etiquette || "").slice(0, 40);
-  });
+  c.calques = readCalques(d.calques);
   c.montage = readMontage(d.montage);
   if(d.grille && typeof d.grille === "object") c.grille = readGrille(d.grille);
   if(d.meta && typeof d.meta === "object") c.meta = readMeta(d.meta);
   c.nom = readNom(d.nom);
   c.cadres = readCadres(d.cadres);   // fiche d'avant 0.13 : seul le cadre du format courant (ajouté par fixCadre)
   c.pub = readPub(d.pub);
+  c.carrousel = readCarrousel(d.carrousel);   // fiche d'avant 0.14 : 3 diapositives carrées
   p.cfg = c; fixCadre(p); p.cache = {};
   return true;
+}
+/* calques d'une fiche ou d'un modèle : seuls les types connus sont gardés, chaque champ est borné (copie, jamais la liste reçue) */
+function readCalques(list){
+  const out = (Array.isArray(list) ? list : []).filter(l => l && typeof l === "object" && TYPES[l.type]).map(l => Object.assign(defLayer(l.type), l.type === "texte" && l.larg == null ? {larg:0.9} : {}, JSON.parse(JSON.stringify(l, noPriv)), {id:typeof l.id === "string" && l.id ? l.id : uid(), x:clamp(+l.x || 0.5, -0.2, 1.2), y:clamp(+l.y || 0.5, -0.2, 1.2), s:clamp(+l.s || 1, 0.2, 5), rot:+l.rot || 0, ex:clamp(+l.ex || 1, 0.2, 5), ey:clamp(+l.ey || 1, 0.2, 5)}));
+  out.forEach(l => { if(l.hr != null) l.hr = clamp(+l.hr || 1, 0.3, 3); });
+  out.filter(l => l.type === "zoom").forEach(l => {
+    const z = l.zone && typeof l.zone === "object" ? l.zone : {}, old = l.hr == null;   // fiche d'avant 0.7 : la loupe ronde ignorait ar, le rectangle faisait 420 x 420 unités
+    l.src = typeof l.src === "string" && l.src ? clean(l.src) : null; l.zone = {x:clamp(+z.x || 0.5, 0, 1), y:clamp(+z.y || 0.5, 0, 1), w:clamp(+z.w || 0.18, 0.02, 1)};
+    l.forme = l.forme === "rect" ? "rect" : "cercle"; l.ar = clamp(old ? (l.forme === "rect" ? (+l.ar || 1.4)*420/560 : 1) : +l.ar || 1, 0.3, 3); l.hr = clamp(old ? (l.forme === "rect" ? 420/400 : 1) : +l.hr || 1, 0.3, 3); l.epais = clamp(Math.round(+l.epais) || 2, 0, 3); l.lien = l.lien !== false; l.etiquette = clean(l.etiquette || "").slice(0, 40);
+  });
+  return out;
 }
 function defLayer(type){
   const base = {id:uid(), type:type, x:0.5, y:0.5, s:1, rot:0, ex:1, ey:1};
@@ -728,8 +780,10 @@ async function addPhotos(items, fiches){
     const p = {id:uid(), name:it.file.name, path:it.path || it.file.name, file:it.file, key:key, w:img.width, h:img.height, img:img, thumb:makeThumb(img), cfg:newCfg(it.file.name), cache:{}, modified:false, prise:(await readShot(it.file)) || shotOfFile(it.file)};
     fixCadre(p);
     const fiche = (fiches && (fiches[p.path] || fiches[p.name])) || pendingFiches[p.path] || pendingFiches[p.name];
-    if(fiche){ if(applyCfg(p, fiche)) p.modified = true; }
-    else await restoreCfg(p);
+    let repris = false;
+    if(fiche){ if(applyCfg(p, fiche)){ p.modified = true; repris = true; } }
+    else repris = await restoreCfg(p);
+    if(!repris) applyDefaultModel(p);   // modèle par défaut (onglet Calques) : seulement sur une photo sans fiche reprise
     histInit(p);
     S.photos.push(p);
     if(!first) first = p;
@@ -1165,8 +1219,8 @@ function defaultFusionSrc(p){
   return q ? srcOf(p, q) : null;
 }
 /* rectangles des bandes dans un repère cw x ch (ratio non arrondi, pour les cadres) */
-function paneRects(m, n, cw, ch){
-  const u = cw/1080, sep = Math.round((m.sep || 0)*u), vert = m.sens !== "h", total = vert ? cw : ch, size = (total - sep*(n - 1))/n, out = [];
+function paneRects(m, n, cw, ch, p){
+  const u = unitOf(p, cw, ch), sep = Math.round((m.sep || 0)*u), vert = m.sens !== "h", total = vert ? cw : ch, size = (total - sep*(n - 1))/n, out = [];
   for(let i = 0; i < n; i++){
     const a = Math.round(i*(size + sep)), b = Math.round(i*(size + sep) + size);
     out.push(vert ? {x:a, y:0, w:b - a, h:ch, ratio:size/ch} : {x:0, y:a, w:cw, h:b - a, ratio:cw/size});
@@ -1178,7 +1232,7 @@ function fixMontage(p){
   const m = p.cfg.montage; if(!m) return;
   if(m.mode === "bandes"){
     if(m.bandes.length < 2) initBandes(p, m);
-    const o = outSize(p), rects = paneRects(m, m.bandes.length, o.W, o.H);
+    const o = outSize(p), rects = paneRects(m, m.bandes.length, o.W, o.H, p);
     m.bandes.forEach((b, i) => { const q = photoOf(p, b.src); if(q) b.cadre = fitCadre(b.cadre, srcW(q), srcH(q), rects[i].ratio); });
   }
   if(m.mode === "fusion" && !m.fusion){ m.fusion = newFusion(); m.fusion.src = defaultFusionSrc(p); }
@@ -1222,17 +1276,19 @@ function placeholder(ctx, r, name, u){
   ctx.fillStyle = "#A8C8FB"; ctx.font = `${22*u}px ${MONT}`; ctx.fillText(clean(name || ""), r.x + r.w/2, r.y + r.h/2 + 18*u, r.w - 20*u);
   ctx.restore();
 }
+/* étiquette d'une bande ; « Avant » et « Après » (préréglage avant / après de l'onglet Montage) s'écrivent en jaune ESAM */
+const AVAP_RE = /^\s*(avant|apr[eè]s)\s*$/i;
 function etiquette(ctx, r, txt, u){
   const fs = 34*u, px = 16*u, py = 10*u, mg = 18*u, bar = 6*u;
   ctx.save(); ctx.font = `${fs}px ${ANTON}`;
   const tw = Math.min(ctx.measureText(txt).width, r.w - 2*mg - 2*px - bar - 8*u), w = tw + 2*px + bar + 8*u, h = fs*1.2 + 2*py, x = r.x + mg, y = r.y + r.h - mg - h;
   ctx.fillStyle = "rgba(23,22,24,.78)"; rRound(ctx, x, y, w, h, 8*u); ctx.fill();
   ctx.fillStyle = "#F9DD10"; ctx.fillRect(x + px*0.6, y + py*0.8, bar, h - py*1.6);
-  ctx.fillStyle = "#fff"; ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.fillText(txt, x + px*0.6 + bar + 8*u, y + h/2 + fs*0.05, tw);
+  ctx.fillStyle = AVAP_RE.test(txt) ? "#F9DD10" : "#fff"; ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.fillText(txt, x + px*0.6 + bar + 8*u, y + h/2 + fs*0.05, tw);
   ctx.restore();
 }
 function drawBandes(ctx, p, m, cw, ch){
-  const rects = paneRects(m, m.bandes.length, cw, ch), u = cw/1080;
+  const rects = paneRects(m, m.bandes.length, cw, ch, p), u = unitOf(p, cw, ch);
   ctx.fillStyle = m.sepCouleur || "#fff"; ctx.fillRect(0, 0, cw, ch);
   m.bandes.forEach((b, i) => {
     const r = rects[i], q = photoOf(p, b.src);
@@ -1254,7 +1310,7 @@ function shapePath(ctx, forme, cx, cy, w, h, u){
   if(forme === "ellipse") ctx.ellipse(cx, cy, Math.max(1, w/2), Math.max(1, h/2), 0, 0, Math.PI*2); else rRound(ctx, cx - w/2, cy - h/2, Math.max(1, w), Math.max(1, h), 12*u);
 }
 function drawFusion(ctx, p, f, cw, ch){
-  const q = photoOf(p, f.src), u = cw/1080, box = fusionBox(p, f, {W:cw, H:ch}), w = f.fenetre || {forme:"non"};
+  const q = photoOf(p, f.src), u = unitOf(p, cw, ch), box = fusionBox(p, f, {W:cw, H:ch}), w = f.fenetre || {forme:"non"};
   const layer = mkCanvas(cw, ch), lx = layer.getContext("2d");
   lx.translate(box.cx, box.cy); lx.rotate(box.rot); lx.imageSmoothingQuality = "high";
   if(q){ let img = prepCanvas(p, q, 2*Math.max(cw, ch)); if(f.mode === "chaleur") img = heatCanvas(p, q, img, f.seuil); lx.drawImage(img, -box.ow/2, -box.oh/2, box.ow, box.oh); }
@@ -1311,8 +1367,8 @@ function downUp(src, factor, smooth){
    la taille du rendu et les clés des zones précédentes dont la région touche la sienne (elles ont modifié ce qu'elle
    floute) : quand une zone bouge, seules elle et les zones posées après elle qui la recouvrent sont recalculées, les
    autres sont recomposées telles quelles. Même rendu au pixel près qu'un calcul complet. */
-function blurZone(out, z, r, cw, bw){
-  const u = cw/1080, rot = r.rot, bx = Math.round(r.x - bw/2), by = Math.round(r.y - bw/2);
+function blurZone(out, z, r, u, bw){
+  const rot = r.rot, bx = Math.round(r.x - bw/2), by = Math.round(r.y - bw/2);
   const reg = mkCanvas(bw, bw), rx = reg.getContext("2d");
   rx.drawImage(out, bx, by, bw, bw, 0, 0, bw, bw);
   let fx;
@@ -1347,7 +1403,7 @@ function hashKey(s){ return `${hash(s).toString(36)}.${hash("\u0001" + s).toStri
 function applyBlurs(base, p, cw, ch){
   const zones = p.cfg.flous || []; if(!zones.length) return base;
   const out = mkCanvas(cw, ch), ctx = out.getContext("2d"); ctx.drawImage(base, 0, 0);
-  const u = cw/1080, prev = p.cache.zones || {}, next = {}, done = [];
+  const u = unitOf(p, cw, ch), prev = p.cache.zones || {}, next = {}, done = [];
   zones.forEach(z => {
     const r = zoneOut(z, p, cw, ch);
     const diag = Math.sqrt(r.w*r.w + r.h*r.h), pad = 24*u*z.force;
@@ -1359,7 +1415,7 @@ function applyBlurs(base, p, cw, ch){
     const mkey = JSON.stringify([z.forme, z.mode, r.w, r.h, r.rot, bw]);
     let e = prev[z.id];
     if(!e || e.key !== key){
-      const mk = e && e.mkey === mkey ? e.mk : blurMask(z, r, bw), fx = blurZone(out, z, r, cw, bw);
+      const mk = e && e.mkey === mkey ? e.mk : blurMask(z, r, bw), fx = blurZone(out, z, r, u, bw);
       const fc = fx.getContext("2d"); fc.globalCompositeOperation = "destination-in"; fc.drawImage(mk, 0, 0); fc.globalCompositeOperation = "source-over";
       e = {key:key, mkey:mkey, mk:mk, fx:fx};
     }
@@ -1378,7 +1434,8 @@ function blurredCanvas(p, cw, ch){
 
 /* ---------- rendu : calques ----------
    Chaque calque est dessiné dans un repère centré sur (x*W, y*H), tourné de rot, à l'échelle s. drawLayer renvoie la boîte
-   {w, h} (non tournée, en px de sortie) qui sert aux poignées et à la détection du doigt. u = W/1080 normalise les tailles. */
+   {w, h} (non tournée, en px de sortie) qui sert aux poignées et à la détection du doigt. u (unitOf : W/1080, ou la largeur
+   d'une diapositive divisée par 1080 en carrousel) normalise les tailles. */
 function drawLogo(ctx, x, y, r){
   const img = $("logoImg"); if(!img.complete || !img.naturalWidth) return;
   ctx.save(); ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.closePath(); ctx.clip();
@@ -1413,7 +1470,8 @@ function drawBrand(ctx, u, mode){
 /* titre : une ligne par ligne saisie (pas de retour automatique), la taille ne dépend que de s ;
    texte : retour automatique dans une zone de largeur larg (fraction de W), indépendante de la taille du texte */
 function textBlock(ctx, u, l, W, titre){
-  const txt = clean(l.texte || (titre ? "TITRE" : "Texte")), zone = titre ? 0 : (l.larg || 0.8)*W/l.s;
+  // larg : fraction de 1080 u (la largeur de l'image, ou d'une diapositive en carrousel)
+  const txt = clean(l.texte || (titre ? "TITRE" : "Texte")), zone = titre ? 0 : (l.larg || 0.8)*1080*u/l.s;
   const size = titre ? 86*u : 40*u, lh = titre ? 1.0 : 1.25;
   ctx.font = titre ? `${size}px ${ANTON}` : `600 ${size}px ${MONT}`;
   const lines = wrapLines(ctx, titre ? txt.toUpperCase() : txt, titre ? Infinity : zone);
@@ -1510,7 +1568,7 @@ function fitZone(p, l, dims, u){
 function zoneCadre(l, dims, u){ const z = l.zone, h = z.w*zoneRatio(dims, l, u); return {x:z.x - z.w/2, y:z.y - h/2, w:z.w, h:h}; }
 /* boîte de la zone grossie dans le repère de sortie o (photo elle-même) */
 function zoneBox(p, l, o){
-  const u = o.W/1080, c = cropRef(p), b = loupeSize(u, l), z = l.zone;   // la zone est en fraction de la source (de la sortie en bandeaux, comme les flous)
+  const u = unitOf(p, o.W, o.H), c = cropRef(p), b = loupeSize(u, l), z = l.zone;   // la zone est en fraction de la source (de la sortie en bandeaux, comme les flous)
   const ow = z.w/c.w*o.W, pt = toOut(p, z.x, z.y, o.W, o.H);   // avec une inclinaison, le centre suit le contenu, l'anneau reste droit
   return {cx:pt[0], cy:pt[1], hw:ow/2, hh:ow*b.h/b.w/2, rot:0};
 }
@@ -1529,7 +1587,7 @@ function loupePath(ctx, l, w, h, u){ shapePath(ctx, l.forme === "rect" ? "rect" 
 function edgeDist(rect, rx, ry, dx, dy){ return rect ? Math.min(Math.abs(dx) > 1e-6 ? rx/Math.abs(dx) : 1e9, Math.abs(dy) > 1e-6 ? ry/Math.abs(dy) : 1e9) : 1/Math.sqrt((dx/rx)*(dx/rx) + (dy/ry)*(dy/ry)); }
 /* anneau de la zone grossie et trait de liaison vers la loupe, dans le repère de sortie (photo elle-même seulement) */
 function drawZoomLien(ctx, l, p, W, H){
-  const u = W/1080, zb = zoneBox(p, l, {W:W, H:H}), col = l.couleur || "#F9DD10", lw = [0, 3, 5, 8][l.epais == null ? 2 : l.epais]*u, rect = l.forme === "rect";
+  const u = unitOf(p, W, H), zb = zoneBox(p, l, {W:W, H:H}), col = l.couleur || "#F9DD10", lw = [0, 3, 5, 8][l.epais == null ? 2 : l.epais]*u, rect = l.forme === "rect";
   if(!lw) return;
   ctx.save(); ctx.shadowColor = "rgba(0,0,0,.4)"; ctx.shadowBlur = 4*u; ctx.lineWidth = lw; ctx.strokeStyle = col; ctx.lineCap = "round";
   shapePath(ctx, rect ? "rect" : "ellipse", zb.cx, zb.cy, zb.hw*2, zb.hh*2, 2*u); ctx.stroke();
@@ -1551,7 +1609,7 @@ function drawZoom(ctx, u, l, p, cw, ch){
   if(q){
     const dims = zoomDims(p, l, q); fitZone(p, l, dims, u);
     // résolution de l'export, par pas de 16 (pendant le glissement d'un curseur, celle de l'aperçu allégé)
-    const kq = QUICK ? Math.min(1, cw/(1080*u)) : 1, pw = clamp(Math.round(b.w*l.s*kq/16)*16, 64, 2048), ph = Math.max(16, Math.round(pw*b.h/b.w));
+    const kq = QUICK ? Math.min(1, cw/outSize(p).W) : 1, pw = clamp(Math.round(b.w*l.s*kq/16)*16, 64, 2048), ph = Math.max(16, Math.round(pw*b.h/b.w));
     // photo elle-même inclinée : la zone (droite) est prise dans la source inclinée, autour du point de contenu transformé
     const t = !l.src && q === p ? inclP(p) : null, zc = zoneCadre(l, dims, u);
     if(t){ const m = inclPt(t, l.zone.x, l.zone.y); zc.x = m[0] - zc.w/2; zc.y = m[1] - zc.h/2; }
@@ -1580,9 +1638,9 @@ function drawForme(ctx, u, l){
   ctx.closePath(); ctx.fill(); ctx.restore();
   return {w:w, h:h};
 }
-function placeCoin(l, W, H){
+function placeCoin(l, W, H, u){
   // le coin reste collé à l'angle choisi de l'image, quelle que soit sa taille ou le format
-  const k = COINS[l.coin] == null ? "bd" : l.coin, hw = 180*(W/1080)*l.s;
+  const k = COINS[l.coin] == null ? "bd" : l.coin, hw = 180*(u || W/1080)*l.s;
   l.rot = COINS[k]; l.x = k.charAt(1) === "d" ? 1 - hw/W : hw/W; l.y = k.charAt(0) === "b" ? 1 - hw/H : hw/H;
 }
 function drawCoin(ctx, u, l){
@@ -1613,8 +1671,8 @@ function drawCarte(ctx, u, l){
   return {w:w, h:h};
 }
 function drawLayer(ctx, l, W, H, p, cw, ch){
-  const u = W/1080;
-  if(l.type === "coin") placeCoin(l, W, H);
+  const u = unitOf(p, W, H);
+  if(l.type === "coin") placeCoin(l, W, H, u);
   if(l.type === "zoom" && !l.src && p) drawZoomLien(ctx, l, p, W, H);   // l'anneau de la zone et son trait restent dans le repère de l'image
   const ex = l.ex || 1, ey = l.ey || 1;
   ctx.save(); ctx.translate(l.x*W, l.y*H); ctx.rotate((l.rot || 0)*Math.PI/180); ctx.scale(l.s*ex, l.s*ey);
@@ -1751,7 +1809,7 @@ function drawOutView(p){
   } else if(S.tab === "montage"){
     const m = p.cfg.montage, dpr = Math.min(2, window.devicePixelRatio || 1);
     if(m.mode === "bandes"){
-      paneRects(m, m.bandes.length, o.W, o.H).forEach((r, i) => {
+      paneRects(m, m.bandes.length, o.W, o.H, p).forEach((r, i) => {
         const sel = i === S.msel, lw = hx(sel ? 3 : 1.2);
         ctx.save(); ctx.lineWidth = lw; ctx.strokeStyle = sel ? "#F9DD10" : "rgba(255,255,255,.7)"; ctx.setLineDash(sel ? [] : [hx(5), hx(4)]);
         ctx.strokeRect(r.x + lw/2, r.y + lw/2, r.w - lw, r.h - lw);
@@ -1771,8 +1829,24 @@ function drawOutView(p){
       tagOn(ctx, hx(6), o.H, `DESSOUS · ${p.name}`, "rgba(23,22,24,.85)", "#fff", o);   // ramenée dans l'image, donc en bas
     }
   }
-  $("tagFmt").textContent = `${fmtOf(p.cfg).nom} · ${o.W} x ${o.H}`;
+  const fo = fmtOf(p.cfg);
+  if(fo.n && ((S.tab === "export" && S.carrousel) || S.tab === "calques")) drawCuts(ctx, fo.n, {x:0, y:0, w:o.W, h:o.H}, S.tab === "export");
+  $("tagFmt").textContent = `${fo.nom} · ${o.W} x ${o.H}`;
   $("tagMode").textContent = S.tab === "flous" ? "Flous" : S.tab === "calques" ? "Calques" : S.tab === "montage" ? "Montage" : S.tab === "couleur" && S.lasso ? "Tracez au doigt autour de la zone" : "";
+}
+/* carrousel : lignes de coupe en pointillé entre les n diapositives d'un rectangle r (espace de la vue), numéros au besoin ;
+   aperçu seulement (S.carrousel, onglets Calques et Cadre), jamais dans l'export */
+function drawCuts(ctx, n, r, nums){
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  ctx.save(); ctx.lineWidth = hx(2); ctx.strokeStyle = "#F9DD10"; ctx.setLineDash([hx(8), hx(6)]); ctx.shadowColor = "rgba(0,0,0,.7)"; ctx.shadowBlur = hx(3);
+  ctx.beginPath(); for(let i = 1; i < n; i++){ const x = r.x + r.w*i/n; ctx.moveTo(x, r.y); ctx.lineTo(x, r.y + r.h); } ctx.stroke();
+  ctx.restore();
+  if(!nums) return;
+  for(let i = 0; i < n; i++){
+    const rr = hx(11*dpr), bx = r.x + r.w*i/n + rr*1.8, by = r.y + r.h - rr*1.8;   // en bas à gauche de chaque diapositive (le bouton Original est à droite)
+    dot(ctx, bx, by, rr, "#F9DD10");
+    ctx.save(); ctx.fillStyle = "#171618"; ctx.font = `700 ${hx(12*dpr)}px ${MONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(String(i + 1), bx, by); ctx.restore();
+  }
 }
 /* zones au lasso : tracées sur l'aperçu quand l'image de base est le cadre de la photo elle-même (pas une bande, pas la photo du dessus) */
 function lassoOn(p){ return S.tab === "couleur" && colorTarget(p) === p && !isBandes(p) && !!(p.cfg.selectif && p.cfg.selectif.actif); }
@@ -1796,7 +1870,7 @@ function tagOn(ctx, x, y, txt, bg, fg, o){
 }
 /* grille magnétique : pas carré de W/n, les bords et les axes médians de l'image servent aussi de repères */
 function gridOn(p){ return !!(p.cfg.grille && p.cfg.grille.aimant); }
-function gridStep(p, o){ return o.W/((p.cfg.grille && p.cfg.grille.n) || 12); }
+function gridStep(p, o){ return 1080*unitOf(p, o.W, o.H)/((p.cfg.grille && p.cfg.grille.n) || 12); }   // carrousel : la grille d'une diapositive
 function drawGrid(ctx, p, o){
   const st = gridStep(p, o);
   ctx.save(); ctx.lineWidth = hx(1); ctx.strokeStyle = "rgba(255,255,255,.35)"; ctx.beginPath();
@@ -1836,12 +1910,13 @@ function drawCropView(p){
   ctx.save(); ctx.lineWidth = hx(1); ctx.strokeStyle = "rgba(255,255,255,.45)";
   for(let i = 1; i < n; i++){ ctx.beginPath(); ctx.moveTo(c.x + c.w*i/n, c.y); ctx.lineTo(c.x + c.w*i/n, c.y + c.h); ctx.moveTo(c.x, c.y + c.h*i/n); ctx.lineTo(c.x + c.w, c.y + c.h*i/n); ctx.stroke(); }
   ctx.restore();
+  const fc = fmtOf(p.cfg); if(fc.n) drawCuts(ctx, fc.n, c, false);   // carrousel : où passeront les coupes entre diapositives
   ctx.save(); handleStyle(ctx); ctx.setLineDash([]); ctx.lineWidth = hx(2.5); ctx.strokeStyle = "#F9DD10"; ctx.strokeRect(c.x, c.y, c.w, c.h); ctx.restore();
   const r = handleR();
   [[c.x, c.y], [c.x + c.w, c.y], [c.x, c.y + c.h], [c.x + c.w, c.y + c.h]].forEach(q => dot(ctx, q[0], q[1], r*0.8, "#F9DD10"));
   const o = outSize(p);
-  $("tagFmt").textContent = `${fmtOf(p.cfg).nom} · ${o.W} x ${o.H}`;
-  $("tagMode").textContent = fmtOf(p.cfg).w ? "Glissez le cadre, pincez ou tirez un coin" : "Format original : pas de recadrage";
+  $("tagFmt").textContent = `${fc.nom} · ${o.W} x ${o.H}`;
+  $("tagMode").textContent = fc.w ? "Glissez le cadre, pincez ou tirez un coin" : "Format original : pas de recadrage";
 }
 
 /* ---------- interactions sur l'aperçu ----------
@@ -1862,7 +1937,7 @@ function curObj(p){
   }
   if(S.tab === "montage"){
     const m = p.cfg.montage;
-    if(m.mode === "bandes" && m.bandes.length){ const i = clamp(S.msel, 0, m.bandes.length - 1), r = paneRects(m, m.bandes.length, o.W, o.H)[i]; return {kind:"bande", ref:m.bandes[i], cx:r.x + r.w/2, cy:r.y + r.h/2, hw:r.w/2, hh:r.h/2, rot:0, nohand:true, norot:true}; }
+    if(m.mode === "bandes" && m.bandes.length){ const i = clamp(S.msel, 0, m.bandes.length - 1), r = paneRects(m, m.bandes.length, o.W, o.H, p)[i]; return {kind:"bande", ref:m.bandes[i], cx:r.x + r.w/2, cy:r.y + r.h/2, hw:r.w/2, hh:r.h/2, rot:0, nohand:true, norot:true}; }
     if(m.mode === "fusion" && m.fusion){ const f = m.fusion; if(S.msub === "fenetre" && f.fenetre.forme !== "non") return Object.assign(fenetreBox(p, f, o), {kind:"fenetre", ref:f, norot:true}); return Object.assign(fusionBox(p, f, o), {kind:"fusion", ref:f}); }
   }
   return null;
@@ -1893,7 +1968,7 @@ function pick(p, q){
     for(let i = ls.length - 1; i >= 0; i--){ const l = ls[i]; if(l._box && inBox({cx:l.x*o.W, cy:l.y*o.H, hw:l._box.w/2, hh:l._box.h/2, rot:(l.rot || 0)*Math.PI/180}, q, hx(8))) return l.id; }
   } else if(S.tab === "montage" && isBandes(p)){
     // la bande sous le doigt (indice en chaîne) ; en superposition, l'objet courant est le seul manipulable
-    const m = p.cfg.montage, rects = paneRects(m, m.bandes.length, o.W, o.H);
+    const m = p.cfg.montage, rects = paneRects(m, m.bandes.length, o.W, o.H, p);
     for(let i = 0; i < rects.length; i++){ const r = rects[i]; if(q.x >= r.x && q.x <= r.x + r.w && q.y >= r.y && q.y <= r.y + r.h) return String(i); }
   }
   return null;
@@ -1923,13 +1998,13 @@ function applyGesture(p, b, o0, dx, dy, f, da){
     // l'anneau de la zone grossie se déplace sur la photo, pincer change la taille de la zone (donc le grossissement)
     const l = b.ref, z = l.zone, z0 = o0.zone, dd = deltaFromOut(p, dx, dy, o.W, o.H);
     z.x = z0.x + dd[0]; z.y = z0.y + dd[1]; z.w = z0.w*f;
-    fitZone(p, l, zoomDims(p, l, p), o.W/1080);
+    fitZone(p, l, zoomDims(p, l, p), unitOf(p, o.W, o.H));
   } else if(b.kind === "lcontenu"){
     // la photo incrustée suit le doigt dans la loupe (la zone va dans l'autre sens) ; pincer zoome dedans
     const l = b.ref, q = zoomSrc(p, l); if(!q) return;
-    const z = l.zone, z0 = o0.zone, dims = zoomDims(p, l, q), k = zoneRatio(dims, l, o.W/1080), c = Math.cos(b.rot), s = Math.sin(b.rot), lx = dx*c + dy*s, ly = -dx*s + dy*c;
+    const z = l.zone, z0 = o0.zone, dims = zoomDims(p, l, q), k = zoneRatio(dims, l, unitOf(p, o.W, o.H)), c = Math.cos(b.rot), s = Math.sin(b.rot), lx = dx*c + dy*s, ly = -dx*s + dy*c;
     z.w = z0.w/f; z.x = z0.x - lx/(b.hw*2)*z.w; z.y = z0.y - ly/(b.hh*2)*z.w*k;
-    fitZone(p, l, dims, o.W/1080);
+    fitZone(p, l, dims, unitOf(p, o.W, o.H));
   } else if(b.kind === "fenetre"){
     // la fenêtre se déplace dans le repère (tourné) de la photo superposée
     const w = b.ref.fenetre, w0 = o0.fenetre, c = Math.cos(b.rot), s = Math.sin(b.rot), lx = dx*c + dy*s, ly = -dx*s + dy*c;
@@ -2175,7 +2250,7 @@ $("film").addEventListener("click", e => {
   if(b.dataset.sel) select(b.dataset.sel);
 });
 function select(id){
-  S.sel = id; S.fsel = null; S.csel = null; S.lsub = "calque"; S.csrc = null; S.msel = 0; S.msub = "calque"; S.mview = "deux"; S.zsel = null; S.lasso = false; setOriginal(false);
+  S.sel = id; S.fsel = null; S.csel = null; S.lsub = "calque"; S.csrc = null; S.aaSrc = null; S.msel = 0; S.msub = "calque"; S.mview = "deux"; S.zsel = null; S.lasso = false; setOriginal(false);
   const p = selected(); if(!p) return;
   $("pname").textContent = `${p.path}  ·  ${p.w} x ${p.h}`;
   renderFilm(); renderPanel(); draw();
@@ -2207,7 +2282,8 @@ function renderPanel(){
   let h = "";
   if(S.tab === "cadre"){
     const f = fmtOf(c), m = maxCadre(p), zoom = f.w ? Math.round(c.cadre.w/m.w*100) : 100;
-    h += `<div class="grp"><span class="lbl">Format de publication</span>${chips(FORMATS.map(x => [x.id, x.nom, x.w ? `${x.res} · ${x.w} x ${x.h}` : x.res]), c.format, "fmt")}</div>`;
+    h += `<div class="grp"><span class="lbl">Format de publication</span>${chips(FORMATS.map(x => { const e = fmtById(x.id, c); return [x.id, x.nom, e.w ? `${x.res} · ${e.w} x ${e.h}` : x.res]; }), c.format, "fmt")}</div>`;
+    if(f.n) h += `<div class="sub"><div class="lbl">Carrousel Instagram</div>${carrouselCtl(c)}<p class="hint">La bande panoramique est découpée en ${f.n} diapositives (pointillés jaunes sur l'aperçu). Logo, textes et flous gardent leur taille habituelle ; « Exporter le carrousel » est dans l'onglet Export.</p></div>`;
     h += `<div class="grp"><span class="lbl">Orientation de la photo</span><div class="actions"><button type="button" class="btn small ghost" data-act="rotL">Tourner à gauche</button><button type="button" class="btn small ghost" data-act="rotR">Tourner à droite</button></div></div>`;
     if(!isBandes(p)){
       const ic = readIncl(c.inclinaison);
@@ -2224,9 +2300,11 @@ function renderPanel(){
     fixMontage(p);
     const m = c.montage;
     const fq = m.mode === "fusion" && m.fusion ? photoOf(p, m.fusion.src) : null;
+    const avap = avapBlock(p);
     h += `<div class="grp"><span class="lbl">Composition</span>${chips(MODES_MONTAGE, m.mode, "mmode")}<p class="hint">${m.mode === "bandes" ? "Plusieurs photos sur une même image (vue large, zoom, infrarouge), en bandes côte à côte ou empilées." : m.mode === "fusion" ? `Une photo (l'infrarouge${fq ? `, ici ${esc(fq.name)}` : ""}) posée en transparence sur ${esc(p.name)} et alignée dessus : une sorte de réalité augmentée. Pour un zoom incrusté dans un coin, voir plutôt l'onglet Calques.` : "Combinez cette photo avec d'autres photos chargées : bandeaux côte à côte ou superposition infrarouge. Pour incruster une loupe ou la photo zoom dans un coin, utilisez le calque « Zoom incrusté » de l'onglet Calques."}</p></div>`;
+    if(m.mode === "aucun") h += avap;   // en montage, le préréglage passe après les réglages en cours
     if(m.mode === "bandes"){
-      const i = clamp(S.msel, 0, m.bandes.length - 1), b = m.bandes[i], q = photoOf(p, b.src), o = outSize(p), rect = paneRects(m, m.bandes.length, o.W, o.H)[i];
+      const i = clamp(S.msel, 0, m.bandes.length - 1), b = m.bandes[i], q = photoOf(p, b.src), o = outSize(p), rect = paneRects(m, m.bandes.length, o.W, o.H, p)[i];
       h += `<div class="grp"><span class="lbl">Disposition</span>${chips([["v","Côte à côte"],["h","Empilées"]], m.sens, "msens")}</div>`;
       h += `<div class="grp"><span class="lbl">Bandes</span><div class="chips">${m.bandes.map((x, j) => `<button type="button" class="chip" data-msel="${j}" aria-pressed="${j === i}">Bande ${j + 1}</button>`).join("")}${m.bandes.length < 4 ? `<button type="button" class="chip add" data-act="madd">+ Ajouter une bande</button>` : ""}</div></div>`;
       h += `<div class="sub"><div class="lbl">Bande ${i + 1}</div><div class="grp"><span class="lbl">Photo</span>${photoChips(p, q, "mpick")}</div>`;
@@ -2257,6 +2335,7 @@ function renderPanel(){
       h += `<p class="hint">La fenêtre suit la photo superposée : elle ne garde que la zone utile (l'animal, le point chaud).</p></div>`;
       h += `<p class="hint">Sur l'image : glissez la photo du dessus (cadre en pointillés, étiquette jaune), pincez ou tirez la poignée jaune pour sa taille, la bleue pour l'orienter, jusqu'à retrouver le même cadrage que la photo du dessous (baissez l'opacité pour voir les deux). Molette : taille.</p>`;
     } else if(S.photos.length < 2) h += `<p class="hint">Chargez aussi les autres vues du même moment (zoom, infrarouge) avec le bouton « + » de la pellicule, puis choisissez une composition. La photo choisie dans la pellicule est toujours la photo de base (celle du dessous).</p>`;
+    if(m.mode !== "aucun") h += avap;
   } else if(S.tab === "couleur"){
     const comp = composition(p), q = colorTarget(p), cq = q.cfg, u = cq.couleur;
     if(comp.length > 1){
@@ -2306,10 +2385,11 @@ function renderPanel(){
     if(ls.length){
       h += `<ul class="list">${ls.map((x, i) => `<li aria-selected="${x === l}"><button type="button" class="sel" data-csel="${x.id}">${esc(layerName(x))}</button><button type="button" class="ib" data-lup="${x.id}" aria-label="Dessous"${i ? "" : " disabled"}><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button><button type="button" class="ib" data-ldown="${x.id}" aria-label="Dessus"${i < ls.length - 1 ? "" : " disabled"}><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/></svg></button><button type="button" class="ib" data-ldel="${x.id}" aria-label="Supprimer"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></li>`).join("")}</ul>`;
       h += `<p class="hint">Sur l'image : touchez un élément pour le choisir (deux fois pour écrire son texte), glissez pour le déplacer, pincez ou tirez la poignée jaune pour la taille, les blanches pour la largeur (bord droit) et la hauteur (bord bas), la bleue pour l'orienter. L'ordre de la liste est l'ordre de dessin (le dernier est au-dessus).</p>`;
-    } else h += `<p class="hint">Aucun élément pour l'instant : ajoutez le logo, un titre, un texte, une légende, une flèche, un cercle ou des éléments de cadre.</p>`;
+    } else h += `<p class="hint">Aucun élément pour l'instant : ajoutez le logo, un titre, un texte, une légende, une flèche, un cercle ou des éléments de cadre, ou appliquez un modèle.</p>`;
+    h += modelesPanel(p);
   } else if(S.tab === "export"){
     const o = outSize(p), f = fmtOf(c), name = exportName(p), pr = presse(), ox = exportSize(o, pr);
-    h += `<div class="card"><div class="kv">Photo : <b>${esc(p.path)}</b></div><div class="kv">Format : <b>${esc(f.nom)}</b> (${esc(f.res)}), <b>${o.W} x ${o.H}</b> px, JPEG</div>${pr ? `<div class="kv">Qualité presse : <b>${ox.W} x ${ox.H}</b> px, JPEG 97 %</div>` : ""}<div class="kv">Fichier exporté : <b data-outname="1">${esc(name)}</b></div>`;
+    h += `<div class="card"><div class="kv">Photo : <b>${esc(p.path)}</b></div><div class="kv">Format : <b>${esc(f.nom)}</b> (${esc(f.res)}), <b>${o.W} x ${o.H}</b> px, JPEG</div>${pr ? `<div class="kv">Qualité presse : <b>${ox.W} x ${ox.H}</b> px, JPEG 97 %</div>` : ""}<div class="kv">Fichier exporté : <b data-outname="1">${esc(name)}</b></div>${f.n ? `<div class="kv">Carrousel : « Exporter la photo » donne la bande entière ; « Exporter le carrousel » la découpe en <b>${f.n} diapositives</b>.</div>` : ""}`;
     if(isMontage(p)){ const m = c.montage, fq = m.fusion ? photoOf(p, m.fusion.src) : null; h += `<div class="kv">Montage : <b>${m.mode === "bandes" ? `${m.bandes.length} bandeaux ${m.sens === "h" ? "empilés" : "côte à côte"}` : `superposition de ${esc(fq ? fq.name : (m.fusion && m.fusion.src) || "photo manquante")} (dessus) sur ${esc(p.name)} (dessous)`}</b></div>`; }
     const loupes = c.calques.filter(l => l.type === "zoom"); if(loupes.length) h += `<div class="kv">Zoom incrusté : <b>${loupes.map(l => l.src ? esc(l.src) : "une zone de la photo").join(", ")}</b></div>`;
     if(S.dirWritable) h += `<div class="kv">Dossier de travail : les exports vont dans <b>publication/</b>, la fiche est enregistrée à côté de la photo ${p.ficheOk ? "(à jour)" : ""}.</div>`;
@@ -2336,15 +2416,60 @@ function renderPanel(){
     h += `<div class="grp"><span class="lbl">Qualité</span>${chips(QUALITES, S.qualite, "qual")}<p class="hint">${pr ? `Presse : ${ox.W} x ${ox.H} px, pour un journal ou une impression ; le nom du fichier se termine par _presse.` : "Réseaux : la taille recommandée par les réseaux sociaux."} Réglage gardé dans ce navigateur.</p></div>`;
     h += `<div class="actions"><button type="button" class="btn primary" data-act="export">Exporter la photo</button>${navigator.canShare ? `<button type="button" class="btn" data-act="share">Partager...</button>` : ""}</div>`;
     h += `<div class="sub"><div class="lbl">Déclinaisons</div><p class="hint">La même photo dans plusieurs formats, en une fois : chaque format reprend son dernier cadre réglé (sinon le cadre maximal), les calques suivent. Le nom de chaque fichier se termine par le format (_carre, _story...).</p>`
-      + `<div class="chips">${FORMATS.map(x => { const cur = x.id === c.format; return `<label class="chip ck"><input type="checkbox" data-decl="${x.id}"${cur || S.decl[x.id] ? " checked" : ""}${cur ? " disabled" : ""}>${esc(x.nom)}${cur ? " (courant)" : ""}</label>`; }).join("")}</div>`
+      + `<div class="chips">${FORMATS.filter(x => !x.carrousel).map(x => { const cur = x.id === c.format; return `<label class="chip ck"><input type="checkbox" data-decl="${x.id}"${cur || S.decl[x.id] ? " checked" : ""}${cur ? " disabled" : ""}>${esc(x.nom)}${cur ? " (courant)" : ""}</label>`; }).join("")}</div>`
       + `<div class="actions" style="margin-top:10px"><button type="button" class="btn small" data-act="exportDecl">Exporter les déclinaisons</button></div>`
       + `<p class="hint">${S.dirWritable ? "Les fichiers vont dans publication/ (avec leur texte .txt)." : "Un fichier ZIP est téléchargé (photos, textes .txt et, si la case est cochée plus bas, la fiche)."}</p></div>`;
+    h += carrouselBlock(p);
     h += `<div class="grp"><span class="lbl">Fiche de configuration (pour reprendre l'édition plus tard)</span><div class="actions"><button type="button" class="btn small ghost" data-act="fiche">Exporter la fiche (JSON)</button><label class="btn small ghost" tabindex="0" for="ficheIn">Importer une fiche</label></div><p class="hint">La fiche décrit tout ce qui a été fait sur la photo (format, cadre, couleurs, flous, calques). Avec un dossier de travail ouvert sur ordinateur, elle est enregistrée automatiquement (${esc(p.name)}.esam.json) et reprise à l'ouverture suivante.</p></div>`;
     h += `<div class="grp"><span class="lbl">Toutes les photos</span><div class="actions"><button type="button" class="btn small ghost" data-act="exportAll">Exporter toutes les photos modifiées</button>${S.dirWritable ? `<button type="button" class="btn small ghost" data-act="exportZip">Télécharger un ZIP</button>` : ""}<button type="button" class="btn small ghost" data-act="ficheAll">Exporter toutes les fiches</button><button type="button" class="btn small ghost" data-act="applyAll"${S.photos.length > 1 ? "" : " disabled"}>Copier les réglages de cette photo vers les autres</button></div><label class="ckl"><input type="checkbox" data-zipfiches="1"${S.zipFiches ? " checked" : ""}> Inclure les fiches (.esam.json) dans les ZIP</label><p class="hint">${S.dirWritable ? "Les photos vont dans publication/, avec leur texte (.txt) ; « Télécharger un ZIP » les rassemble en un seul fichier." : `Un seul fichier ZIP (${today().replace(/-/g, "")}_photos-Com-ESAM.zip) : chaque photo, son texte (.txt) et sa fiche.`}</p><p class="hint">« Copier les réglages » reporte le format, les couleurs, le filtre, le logo, la légende, la date, les animaux et le secteur du nom de fichier, l'auteur et les droits (pas le cadre, ni les flous, ni les flèches, ni la description, ni le code unique).</p></div>`;
     h += `<div class="grp"><span class="lbl">Cette photo</span><div class="actions"><button type="button" class="btn small ghost" data-act="reset">Tout réinitialiser</button><button type="button" class="btn small ghost danger" data-act="remove">Retirer de la liste</button></div></div>`;
   }
   box.innerHTML = h;
   updateHistUI();
+}
+/* carrousel : nombre de diapositives et forme (onglets Cadre et Export, même réglage cfg.carrousel) */
+function carrouselCtl(c){
+  const k = readCarrousel(c.carrousel);
+  return `<div class="grp"><span class="lbl">Diapositives</span>${chips([2, 3, 4, 5].map(n => [String(n), `${n} images`]), String(k.n), "carn")}</div>`
+    + `<div class="grp"><span class="lbl">Forme des diapositives</span>${chips([["carre", "Carrées", "1080 x 1080"], ["portrait", "Portrait 4:5", "1080 x 1350"]], k.forme, "carforme")}</div>`;
+}
+/* bloc Carrousel de l'onglet Export : replié par défaut ; déplié (S.carrousel), il montre les lignes de coupe sur l'aperçu */
+function carrouselBlock(p){
+  const c = p.cfg, f = fmtOf(c), fk = fmtById("carrousel", c), stem = stemOfJpg(outName(p));
+  let h = `<details class="sub" id="carBlock"${S.carrousel ? " open" : ""}><summary>Carrousel Instagram</summary>`
+    + `<p class="hint">Une bande panoramique de ${fk.w} x ${fk.h} px, découpée en ${fk.n} diapositives de 1080 x ${fk.h}. Publiez les images dans l'ordre : le panorama défile d'une diapositive à l'autre.</p>`
+    + carrouselCtl(c);
+  if(f.n) h += `<p class="hint">Sur l'aperçu, les pointillés jaunes montrent les coupes entre diapositives. Le cadre de la bande se règle dans l'onglet Cadre ; logo, textes et flous suivent.</p>`;
+  else h += `<p class="hint">La photo est au format ${esc(f.nom)} : la bande reprend le dernier cadre réglé au format Carrousel (sinon le cadre maximal), les calques gardent leur place en fraction de l'image.</p><div class="actions"><button type="button" class="btn small ghost" data-act="carFmt">Régler le cadre du carrousel</button></div>`;
+  h += `<div class="actions" style="margin-top:10px"><button type="button" class="btn small primary" data-act="exportCar">Exporter le carrousel</button></div>`
+    + `<p class="hint">${S.dirWritable ? `Les diapositives vont dans publication/ (${esc(stem)}_carrousel-1.jpg...).` : `Un fichier ZIP est téléchargé : ${esc(stem)}_carrousel-1.jpg à _carrousel-${fk.n}.jpg, avec le texte .txt et, si la case est cochée plus bas, la fiche.`} Toujours en qualité réseaux (1080 px de large par diapositive).</p></details>`;
+  return h;
+}
+/* avant / après : la photo « Après » proposée est celle choisie (S.aaSrc), sinon la suivante dans la pellicule */
+function aaPhoto(p){
+  const n = S.photos.length, i = S.photos.indexOf(p);
+  if(n < 2) return null;
+  const q = S.photos.find(x => x.id === S.aaSrc && x !== p); if(q) return q;
+  for(let k = 1; k < n; k++){ const x = S.photos[(i + k + n) % n]; if(x !== p) return x; }
+  return null;
+}
+/* sens des bandes selon le format courant : côte à côte (v) en carré et paysage, empilées (h) en portrait et story */
+function sensFor(p){ const o = outSize(p); return o.W >= o.H ? "v" : "h"; }
+/* préréglage : montage en bandeaux à deux bandes, la photo en « Avant », q en « Après », séparateur blanc ; tout passe
+   par cfg.montage (aucun champ nouveau dans la fiche), une seule entrée d'historique */
+function avantApres(p, q){
+  const m = p.cfg.montage;
+  m.mode = "bandes"; m.sens = sensFor(p); m.sepCouleur = "#FFFFFF"; if(!(m.sep > 0)) m.sep = 6;
+  m.bandes = [{src:null, cadre:null, etiquette:"Avant"}, {src:srcOf(p, q), cadre:null, etiquette:"Après"}];
+  S.msel = 0; S.msub = "calque"; fixMontage(p);
+  toast(`Avant / après : ${p.name} puis ${q.name}, ${m.sens === "v" ? "côte à côte" : "empilées"}. Glissez chaque photo dans sa bande pour la cadrer.`);
+}
+function avapBlock(p){
+  const aq = aaPhoto(p);
+  return `<div class="sub" id="avap"><div class="lbl">Avant / Après</div>`
+    + (aq ? `<div class="grp"><span class="lbl">Photo « Après »</span>${photoChips(p, aq, "aapick", true)}</div>` : "")
+    + `<div class="actions"><button type="button" class="btn small primary" data-act="avantApres"${aq ? "" : " disabled"}>Avant / Après</button></div>`
+    + `<p class="hint">${aq ? `En un clic, deux bandes : ${esc(p.name)} « Avant » et ${esc(aq.name)} « Après », ${sensFor(p) === "v" ? "côte à côte (format carré ou paysage)" : "empilées (format portrait ou story)"}, étiquettes jaunes, séparateur blanc. Chaque bande se recadre ensuite au doigt.` : "Chargez une deuxième photo (la même scène après l'intervention) avec le bouton « + » de la pellicule."}</p></div>`;
 }
 function layerEditor(l){
   let h = `<div class="sub" id="leditor"><div class="row"><div class="lbl">${esc(TYPES[l.type])}</div><button type="button" class="btn small ghost" data-act="ldone" style="flex:none">Terminé</button></div>`;
@@ -2369,7 +2494,7 @@ function layerEditor(l){
     h += `<div class="grp"><span class="lbl">Trait</span>${chips([["1","Fin"],["2","Moyen"],["3","Épais"]], String(l.epais || 2), "lepais")}</div>`;
   }
   if(l.type === "zoom"){
-    const p = selected(), q = zoomSrc(p, l), others = S.photos.filter(x => x !== p), o = outSize(p), u = o.W/1080;
+    const p = selected(), q = zoomSrc(p, l), others = S.photos.filter(x => x !== p), o = outSize(p), u = unitOf(p, o.W, o.H);
     h += `<div class="grp"><span class="lbl">Contenu de la loupe</span><div class="chips"><button type="button" class="chip pic" data-lsrc="self" aria-pressed="${!l.src}"><img src="${p.thumb}" alt=""><span>Une zone de cette photo</span></button>${others.map(x => `<button type="button" class="chip pic" data-lsrc="${x.id}" aria-pressed="${x === q && !!l.src}"><img src="${x.thumb}" alt=""><span>${esc(x.name)}</span></button>`).join("")}</div>`;
     h += `<p class="hint">${l.src ? (q ? `La photo ${esc(q.name)} (caméra zoom, thermique) est incrustée dans la loupe.` : `<span class="miss">Photo ${esc(l.src)} non chargée.</span>`) : "La loupe grossit la zone repérée par l'anneau sur la photo."}${others.length ? "" : " Pour incruster la photo de la caméra zoom ou thermique, chargez-la avec le bouton « + » de la pellicule."}</p>`;
     if(l.src && q) h += `<div class="actions"><button type="button" class="btn small ghost" data-ctab="${q.id}">Couleurs de la photo incrustée</button></div>`;
@@ -2462,13 +2587,9 @@ function setZoomSrc(p, l, q){
 }
 function addLayer(p, type){
   const l = defLayer(type);
-  if(type === "legende"){
-    const prev = S.photos.map(x => x.cfg.calques.find(y => y.type === "legende")).find(Boolean);
-    if(prev){ l.animal = prev.animal; l.date = prev.date; l.secteur = prev.secteur; }
-    else { const n = readNom(p.cfg.nom); l.date = n.date || (p.prise && p.prise.date) || l.date; l.animal = n.animaux; l.secteur = n.secteur; }   // date de prise de vue par défaut
-  }
+  if(type === "legende") Object.assign(l, legendeInfos(p));   // date de prise de vue par défaut
   if(type === "fleche" || type === "cercle"){ l.x = 0.5; l.y = 0.5; }
-  if(type === "coin"){ const o = outSize(p); placeCoin(l, o.W, o.H); }
+  if(type === "coin"){ const o = outSize(p); placeCoin(l, o.W, o.H, unitOf(p, o.W, o.H)); }
   if(type === "zoom"){
     // la photo zoom du même vol (DJI _Z) est incrustée d'office ; sinon la loupe grossit le centre du cadre
     const q = siblings(p).find(x => kindOf(x.name) === "zoom"); if(q) setZoomSrc(p, l, q); else setZoomSrc(p, l, null);
@@ -2493,6 +2614,9 @@ $("panel").addEventListener("click", e => {
     if(q !== p){ q.cache = {}; persist(q); }
   }
   else if(d.qual){ S.qualite = d.qual === "presse" ? "presse" : "reseaux"; prefSet("qualite", S.qualite); renderPanel(); return; }
+  else if(d.aapick){ S.aaSrc = d.aapick; renderPanel(); return; }
+  else if(d.carn || d.carforme){ setCarrousel(p, d.carn ? {n:+d.carn} : {forme:d.carforme}); }
+  else if(d.modact){ modAction(p, d.modact, d.mid); return; }
   else if(d.ctarget){ S.csrc = d.ctarget === p.id ? null : d.ctarget; renderPanel(); draw(); return; }
   else if(d.ctab){ S.csrc = d.ctab === p.id ? null : d.ctab; goTab("couleur"); return; }
   else if(d.fsel){ S.fsel = d.fsel; }
@@ -2550,7 +2674,7 @@ $("panel").addEventListener("click", e => {
     else if(a === "ldone"){ S.csel = null; }
     else if(a === "madd"){ const m = c.montage, last = m.bandes[m.bandes.length - 1]; if(m.bandes.length < 4){ m.bandes.push({src:last ? last.src : null, cadre:null, etiquette:""}); S.msel = m.bandes.length - 1; } }
     else if(a === "mdel"){ const m = c.montage; if(m.bandes.length > 2){ m.bandes.splice(clamp(S.msel, 0, m.bandes.length - 1), 1); S.msel = clamp(S.msel, 0, m.bandes.length - 1); } }
-    else if(a === "mcenter" || a === "mmax"){ const b = curPane(p); if(b){ if(a === "mmax" || !b.cadre) b.cadre = null; else { const q = photoOf(p, b.src); if(q){ const o = outSize(p), mx = maxCadreFor(srcW(q), srcH(q), paneRects(c.montage, c.montage.bandes.length, o.W, o.H)[clamp(S.msel, 0, c.montage.bandes.length - 1)].ratio); b.cadre.x = mx.x + (mx.w - b.cadre.w)/2; b.cadre.y = mx.y + (mx.h - b.cadre.h)/2; } } } }
+    else if(a === "mcenter" || a === "mmax"){ const b = curPane(p); if(b){ if(a === "mmax" || !b.cadre) b.cadre = null; else { const q = photoOf(p, b.src); if(q){ const o = outSize(p), mx = maxCadreFor(srcW(q), srcH(q), paneRects(c.montage, c.montage.bandes.length, o.W, o.H, p)[clamp(S.msel, 0, c.montage.bandes.length - 1)].ratio); b.cadre.x = mx.x + (mx.w - b.cadre.w)/2; b.cadre.y = mx.y + (mx.h - b.cadre.h)/2; } } } }
     else if(a === "mfcenter" && c.montage.fusion){ c.montage.fusion.x = 0.5; c.montage.fusion.y = 0.5; }
     else if(a === "mfit" && c.montage.fusion){ c.montage.fusion.s = 1; c.montage.fusion.rot = 0; }
     else if(a === "mswap"){
@@ -2560,6 +2684,10 @@ $("panel").addEventListener("click", e => {
       q.cfg.montage.mode = "fusion"; q.cfg.montage.fusion = nf; q.cache = {}; c.montage.mode = "aucun"; p.cache = {};
       persist(p); persist(q); select(q.id); toast(`${q.name} est maintenant dessous, ${p.name} dessus.`); return;
     }
+    else if(a === "avantApres"){ const q = aaPhoto(p); if(!q) return; avantApres(p, q); }
+    else if(a === "carFmt"){ setFormat(p, "carrousel"); persist(p); goTab("cadre"); return; }
+    else if(a === "exportCar"){ exportCarrousel(p); redraw = false; }
+    else if(a === "modSave"){ modSaveFrom(p); return; }
     else if(a === "export"){ exportPhoto(p); redraw = false; }
     else if(a === "share"){ sharePhoto(p); redraw = false; }
     else if(a === "fiche"){ download(new Blob([ficheJson(p)], {type:"application/json"}), `${p.name}.esam.json`); redraw = false; }
@@ -2614,7 +2742,7 @@ $("panel").addEventListener("input", e => {
     if(d.metq !== undefined) b.etiquette = clean(t.value).slice(0, 40);
     else {
       const q = photoOf(p, b.src); if(!q || !b.cadre) return;
-      const o = outSize(p), ratio = paneRects(c.montage, c.montage.bandes.length, o.W, o.H)[clamp(S.msel, 0, c.montage.bandes.length - 1)].ratio, mx = maxCadreFor(srcW(q), srcH(q), ratio);
+      const o = outSize(p), ratio = paneRects(c.montage, c.montage.bandes.length, o.W, o.H, p)[clamp(S.msel, 0, c.montage.bandes.length - 1)].ratio, mx = maxCadreFor(srcW(q), srcH(q), ratio);
       const k = b.cadre, cxp = k.x + k.w/2, cyp = k.y + k.h/2; k.w = mx.w*v/100; k.h = k.w*srcW(q)/srcH(q)/ratio; k.x = cxp - k.w/2; k.y = cyp - k.h/2;
       b.cadre = fitCadre(k, srcW(q), srcH(q), ratio);
     }
@@ -2637,7 +2765,7 @@ $("panel").addEventListener("input", e => {
     else if(d.llarg !== undefined) l.larg = v/100;
     else if(d.lop !== undefined) l.op = v;
     else if(d.lgross !== undefined || d.lzoom !== undefined){
-      const q = zoomSrc(p, l), o = outSize(p), u = o.W/1080; if(!q) return;
+      const q = zoomSrc(p, l), o = outSize(p), u = unitOf(p, o.W, o.H); if(!q) return;
       const dims = zoomDims(p, l, q);
       if(d.lzoom !== undefined) l.zone.w = Math.min(1, 1/zoneRatio(dims, l, u))*v/100;
       else { const b = loupeSize(u, l), cd = cropRef(p); l.zone.w = b.w*l.s*cd.w/(Math.max(1, v)*o.W); }
@@ -2653,8 +2781,11 @@ $("panel").addEventListener("change", e => {
   const t = e.target; if(t.dataset && t.dataset.lfield === "secteur"){ rememberSecteur(t.value); }
   if(t.dataset && t.dataset.decl){ S.decl[t.dataset.decl] = t.checked; return; }
   if(t.dataset && t.dataset.zipfiches){ S.zipFiches = t.checked; prefSet("zipFiches", t.checked ? "1" : "0"); return; }
+  if(t.dataset && t.dataset.moddef){ modSetDef(t.checked ? t.dataset.moddef : null); renderPanel(); toast(t.checked ? "Ce modèle sera posé sur chaque nouvelle photo (sans fiche reprise)." : "Plus de modèle par défaut."); return; }
   if(t.type === "range") quickOff();   // curseur relâché : rendu en pleine résolution d'aperçu
 });
+/* bloc Carrousel déplié ou replié (toggle ne remonte pas : écouté en capture) : lignes de coupe sur l'aperçu */
+$("panel").addEventListener("toggle", e => { const t = e.target; if(t && t.id === "carBlock" && S.carrousel !== t.open){ S.carrousel = t.open; draw(); } }, true);
 /* aperçu allégé pendant le glissement d'un curseur (S.quick, jamais dans la fiche) : la base, les couleurs et les flous sont
    rendus à demi-résolution (moins sur un grand écran) dans un cache à part (p.cache.quick) ; la pleine résolution revient
    au relâchement (change, pointerup) ou après 250 ms sans mouvement. Les caches de l'aperçu normal et de l'export ne sont pas touchés. */
@@ -2674,6 +2805,7 @@ function applyAll(p){
   const c = p.cfg;
   S.photos.forEach(x => {
     if(x === p) return;
+    x.cfg.carrousel = readCarrousel(c.carrousel);
     setFormat(x, c.format);
     copyColor(x.cfg, c, true);
     x.cfg.meta = Object.assign(readMeta(x.cfg.meta), {auteur:(c.meta || META_DEF).auteur, droits:(c.meta || META_DEF).droits});
@@ -2683,6 +2815,140 @@ function applyAll(p){
   });
   toast(`Réglages copiés vers ${S.photos.length - 1} photo(s).`);
 }
+
+/* ---------- modèles de mise en page ----------
+   Un modèle est un jeu de calques (copie profonde, textes compris, sans ids) et la grille magnétique, gardé dans
+   localStorage (esam-picture:modeles, MOD_MAX au plus), jamais dans la fiche : seuls les calques appliqués y entrent.
+   Appliquer remplace les calques de la photo (Ajouter les complète), avec des ids neufs, en une seule entrée d'historique.
+   Deux modèles intégrés (non supprimables) sont proposés tant que la liste est vide. Modèle par défaut
+   (esam-picture:modeleDefaut) : posé sur chaque photo ajoutée qui n'a pas de fiche reprise. Fichier d'échange :
+   <nom>.esam-modele.json = {app, type: "modele", version, nom, calques, grille} ; à l'import, seuls les calques de types
+   connus sont gardés, normalisés comme dans une fiche (readCalques). */
+const MOD_KEY = "esam-picture:modeles", MOD_MAX = 20, MOD_NOM = 40;
+const MOD_INTEGRES = [
+  {id:"@standard", nom:"Publication standard", calques:[
+    {type:"logo", mode:"cartouche", x:0.5, y:0.09},
+    {type:"legende", animal:"", date:"", secteur:"", x:0.5, y:0.82},
+    {type:"signature", couleur:"#FFFFFF", x:0.5, y:0.95, s:0.8}]},
+  {id:"@story", nom:"Story", calques:[
+    {type:"logo", mode:"cartouche", x:0.5, y:0.08},
+    {type:"titre", texte:"", x:0.5, y:0.2},
+    {type:"legende", animal:"", date:"", secteur:"", x:0.5, y:0.86}]}
+];
+/* lecture tolérante d'un modèle (stocké, importé ou intégré) ; null s'il ne contient aucun calque reconnu */
+function readModele(m){
+  if(!m || typeof m !== "object") return null;
+  // une légende sans date garde une date vide : elle prendra celle de la photo à l'application
+  const src = (Array.isArray(m.calques) ? m.calques : []).map(l => l && l.type === "legende" && l.date == null ? Object.assign({}, l, {date:""}) : l);
+  const calques = readCalques(src); if(!calques.length) return null;
+  calques.forEach(l => { delete l.id; });
+  return {id:typeof m.id === "string" && m.id && m.id.charAt(0) !== "@" ? m.id : uid(), nom:clean(m.nom || "").trim().slice(0, MOD_NOM) || "Modèle",
+    calques:calques, grille:m.grille && typeof m.grille === "object" ? readGrille(m.grille) : null, t:+m.t || 0};
+}
+function modUser(){
+  try { const a = JSON.parse(localStorage.getItem(MOD_KEY) || "[]"); return Array.isArray(a) ? a.map(readModele).filter(Boolean).slice(0, MOD_MAX) : []; }
+  catch(e){ return []; }
+}
+function modStore(list){
+  try { localStorage.setItem(MOD_KEY, JSON.stringify(list.slice(0, MOD_MAX))); return true; }
+  catch(e){ toast("Modèle non enregistré : plus de place dans le navigateur."); return false; }
+}
+function modIntegres(){ return MOD_INTEGRES.map(m => Object.assign(readModele(m), {id:m.id, integre:true})); }
+function modDefId(){ return prefGet("modeleDefaut", "") || null; }
+function modSetDef(id){ prefSet("modeleDefaut", id || ""); }
+/* modèles listés : ceux de l'utilisateur ; les intégrés tant que la liste est vide (ou celui choisi par défaut) */
+function modAll(){ const u = modUser(), def = modDefId(); return u.length ? u.concat(modIntegres().filter(m => m.id === def)) : modIntegres(); }
+function modFind(id){ return modUser().concat(modIntegres()).find(m => m.id === id) || null; }
+/* légende : les informations connues de l'intervention (une autre légende, sinon les champs du nom et la prise de vue) */
+function legendeInfos(p){
+  const prev = S.photos.map(x => x.cfg.calques.find(y => y.type === "legende")).find(Boolean);
+  if(prev) return {animal:prev.animal, date:prev.date, secteur:prev.secteur};
+  const n = readNom(p.cfg.nom);
+  return {animal:n.animaux, date:n.date || (p.prise && p.prise.date) || today(), secteur:n.secteur};
+}
+function fillLegende(p, l){ const i = legendeInfos(p); ["animal", "date", "secteur"].forEach(k => { if(!clean(l[k]).trim() && i[k]) l[k] = i[k]; }); }
+/* calques d'un modèle pour la photo p : copie profonde, ids neufs ; les champs vides d'une légende sont remplis */
+function modCalques(m, p){ return readCalques(JSON.parse(JSON.stringify(m.calques))).map(l => { l.id = uid(); if(l.type === "legende") fillLegende(p, l); return l; }); }
+function modApply(p, m, add){
+  const ls = modCalques(m, p);
+  p.cfg.calques = add ? p.cfg.calques.concat(ls) : ls;
+  if(!add && m.grille) p.cfg.grille = readGrille(m.grille);
+  S.csel = null; S.lsub = "calque";
+  persist(p); renderPanel(); draw();
+  toast(`Modèle « ${m.nom} » ${add ? "ajouté" : "appliqué"} (${ls.length} élément${ls.length > 1 ? "s" : ""}) ; Annuler le défait.`);
+}
+/* ajoute ou remplace (même nom) un modèle de l'utilisateur ; false si la liste est pleine */
+function modPut(m){
+  const u = modUser(), i = u.findIndex(x => x.nom.toLowerCase() === m.nom.toLowerCase());
+  if(i >= 0){ m.id = u[i].id; u[i] = m; }
+  else if(u.length >= MOD_MAX){ toast(`${MOD_MAX} modèles au plus : supprimez-en un d'abord.`); return false; }
+  else u.push(m);
+  return modStore(u) ? (i >= 0 ? "remplacé" : "enregistré") : false;
+}
+function modSaveFrom(p){
+  if(!p.cfg.calques.length){ toast("Aucun élément à enregistrer : ajoutez d'abord le logo, un titre ou une légende."); return; }
+  const nom = window.prompt(`Nom du modèle (${MOD_NOM} caractères au plus) :`, `Modèle ${modUser().length + 1}`);
+  if(nom == null) return;
+  if(!clean(nom).trim()){ toast("Donnez un nom au modèle."); return; }
+  const m = readModele({nom:nom, calques:JSON.parse(JSON.stringify(p.cfg.calques, noPriv)), grille:p.cfg.grille, t:Date.now()});
+  const r = m && modPut(m);
+  if(r) toast(`Modèle « ${m.nom} » ${r} (${m.calques.length} élément${m.calques.length > 1 ? "s" : ""}).`);
+  renderPanel();
+}
+function modJson(m){ return JSON.stringify({app:"esam-picture", type:"modele", version:1, nom:m.nom, calques:m.calques, grille:m.grille}, null, 1); }
+function modAction(p, act, id){
+  const m = modFind(id); if(!m){ toast("Modèle introuvable."); renderPanel(); return; }
+  if(act === "apply" || act === "add"){ modApply(p, m, act === "add"); return; }
+  if(act === "export"){ download(new Blob([modJson(m)], {type:"application/json"}), `${slug(m.nom) || "modele"}.esam-modele.json`); return; }
+  if(m.integre) return;   // les modèles intégrés ne se renomment ni ne se suppriment
+  const u = modUser(), i = u.findIndex(x => x.id === id); if(i < 0) return;
+  if(act === "rename"){
+    const nom = window.prompt("Nouveau nom du modèle :", m.nom); if(nom == null || !clean(nom).trim()) return;
+    const n = clean(nom).trim().slice(0, MOD_NOM);
+    if(u.some((x, j) => j !== i && x.nom.toLowerCase() === n.toLowerCase())){ toast("Un autre modèle porte déjà ce nom."); return; }
+    u[i].nom = n; modStore(u);
+  } else if(act === "del"){
+    if(!window.confirm(`Supprimer le modèle « ${m.nom} » ?`)) return;
+    u.splice(i, 1); modStore(u); if(modDefId() === id) modSetDef(null);
+    toast(`Modèle « ${m.nom} » supprimé.`);
+  }
+  renderPanel();
+}
+/* modèle par défaut posé sur une nouvelle photo (sans fiche reprise) ; la photo n'est pas marquée modifiée */
+function applyDefaultModel(p){
+  const id = modDefId(), m = id && modFind(id); if(!m) return false;
+  p.cfg.calques = modCalques(m, p); if(m.grille) p.cfg.grille = readGrille(m.grille);
+  return true;
+}
+function modResume(m){ const n = m.calques.length, t = []; m.calques.forEach(l => { const x = TYPES[l.type].toLowerCase(); if(t.indexOf(x) < 0) t.push(x); }); return `${n} élément${n > 1 ? "s" : ""} : ${t.join(", ")}`; }
+function modelesPanel(p){
+  const list = modAll(), def = modDefId(), user = list.some(m => !m.integre);
+  let h = `<div class="sub" id="modeles"><div class="lbl">Modèles</div>`
+    + `<p class="hint">Un modèle garde la mise en page de cette photo (éléments, textes, grille) pour la poser en un geste sur une autre photo. Il reste dans ce navigateur ; « Exporter » en fait un fichier à partager avec l'équipe.</p>`
+    + `<div class="actions"><button type="button" class="btn small" data-act="modSave"${p.cfg.calques.length ? "" : " disabled"}>Enregistrer comme modèle</button><label class="btn small ghost" tabindex="0" for="modeleIn">Importer un modèle</label></div>`;
+  h += `<ul class="mods">${list.map(m => { const id = esc(m.id); return `<li class="mod" data-mod="${id}"><div class="mhead"><b>${esc(m.nom)}</b><small>${esc(modResume(m))}${m.integre ? " · modèle intégré" : ""}</small></div>`
+    + `<div class="actions"><button type="button" class="btn small" data-modact="apply" data-mid="${id}" title="Remplace les éléments de la photo">Appliquer</button><button type="button" class="btn small ghost" data-modact="add" data-mid="${id}" title="Ajoute ses éléments à ceux de la photo">Ajouter</button>`
+    + (m.integre ? "" : `<button type="button" class="btn small ghost" data-modact="rename" data-mid="${id}">Renommer</button><button type="button" class="btn small ghost danger" data-modact="del" data-mid="${id}">Supprimer</button>`)
+    + `<button type="button" class="btn small ghost" data-modact="export" data-mid="${id}">Exporter</button></div>`
+    + `<label class="ckl"><input type="checkbox" data-moddef="${id}"${m.id === def ? " checked" : ""}> Appliquer aux nouvelles photos</label></li>`; }).join("")}</ul>`;
+  if(!user) h += `<p class="hint">Modèles intégrés, proposés tant qu'aucun modèle n'est enregistré.</p>`;
+  return h + `</div>`;
+}
+$("modeleIn").addEventListener("change", async e => {
+  const fl = Array.prototype.slice.call(e.target.files); e.target.value = "";
+  let n = 0, bad = 0;
+  for(const f of fl){
+    let d; try { d = JSON.parse(await f.text()); } catch(err){ toast(`${f.name} : JSON illisible`); continue; }
+    const stem = clean(f.name).replace(/\.esam-modele\.json$/i, "").replace(/\.json$/i, "");
+    for(const x of Array.isArray(d) ? d : [d]){
+      const m = readModele(Object.assign({}, x, {nom:x && typeof x.nom === "string" && x.nom.trim() ? x.nom : stem, id:null, t:Date.now()}));
+      if(!m){ bad++; continue; }
+      if(modPut(m)) n++; else break;
+    }
+  }
+  if(n) toast(`${n} modèle(s) importé(s).`); else if(bad) toast("Aucun calque reconnu dans ce fichier : ce n'est pas un modèle.");
+  if(S.tab === "calques") renderPanel();
+});
 
 /* ---------- export ---------- */
 function toBlob(canvas, type, q){ return new Promise(res => canvas.toBlob(res, type, q)); }
@@ -2748,17 +3014,19 @@ function presse(){ return S.qualite === "presse"; }
 function exportSize(o, pr){ const k = pr ? Math.min(2, PRESSE_MAX/Math.max(o.W, o.H)) : 1; return {W:Math.round(o.W*k), H:Math.round(o.H*k)}; }
 /* copie de travail de la photo pour un rendu d'export : fiche copiée en profondeur, cache vide ; le format peut être forcé
    (déclinaisons : cadre du format mémorisé dans cfg.cadres, sinon maximal). La photo elle-même (format, cadre, cache de
-   l'aperçu) n'est pas touchée ; les calques (unités u = W/1080) et les zones en fraction de la source suivent. */
+   l'aperçu) n'est pas touchée ; les calques (unités u, voir unitOf) et les zones en fraction de la source suivent. */
 function exportCopy(p, fmt){
   const t = Object.assign({}, p, {cfg:JSON.parse(JSON.stringify(p.cfg, noPriv)), cache:{}, hist:null});
   if(fmt && fmt !== t.cfg.format && FORMATS.some(f => f.id === fmt)) setFormat(t, fmt); else fixCadre(t);
   return t;
 }
-/* rendu plein format (W x H du format, doublé en qualité presse) dans un cache à part, JPEG avec les métadonnées ESAM */
-async function renderExport(p, fmt){
+/* rendu plein format (W x H du format, doublé en qualité presse) dans un cache à part, JPEG avec les métadonnées ESAM ;
+   opt.canvas : le canvas rendu (taille du format, sans la qualité presse) et la copie, pour le découper (carrousel) */
+async function renderExport(p, fmt, opt){
   await fontsReady();
-  const t = exportCopy(p, fmt), pr = presse(), o = exportSize(outSize(t), pr), c = mkCanvas(o.W, o.H), ctx = c.getContext("2d");
+  const raw = !!(opt && opt.canvas), t = exportCopy(p, fmt), pr = !raw && presse(), o = exportSize(outSize(t), pr), c = mkCanvas(o.W, o.H), ctx = c.getContext("2d");
   renderAll(ctx, t, o.W, o.H, o.W, o.H);
+  if(raw) return {canvas:c, copy:t};
   return withMeta(await toBlob(c, "image/jpeg", pr ? 0.97 : 0.92), t.cfg.meta);
 }
 /* nom d'un export : nom courant, suffixe du format (déclinaisons) puis _presse, avant l'extension */
@@ -2858,10 +3126,10 @@ async function exportAll(zip){
 }
 /* déclinaisons : la photo rendue dans chaque format coché (le format courant toujours), nom suffixé du format ;
    un ZIP téléchargé, ou publication/ si un dossier de travail est ouvert en écriture */
-function declFormats(p){ return FORMATS.filter(f => f.id === p.cfg.format || S.decl[f.id]).map(f => f.id); }
+function declFormats(p){ return FORMATS.filter(f => !f.carrousel && (f.id === p.cfg.format || S.decl[f.id])).map(f => f.id); }   // le carrousel a son propre export
 async function exportDecl(p){
   const fmts = declFormats(p);
-  if(fmts.length < 2){ toast("Cochez au moins un autre format que le format courant."); return; }
+  if(fmts.length < (p.cfg.format === "carrousel" ? 1 : 2)){ toast("Cochez au moins un autre format que le format courant."); return; }
   $("busy").hidden = false;
   try {
     let entries = [];
@@ -2879,6 +3147,32 @@ async function exportDecl(p){
     download(await zipBlob(entries), `${stem}_declinaisons.zip`);
     p.exported = true; renderFilm();
     toast(`${fmts.length} formats dans ${stem}_declinaisons.zip.`);
+  } catch(e){ toast(`Export impossible : ${e.message}`); }
+  finally { $("busy").textContent = "Calcul..."; $("busy").hidden = true; }
+}
+/* carrousel : la bande entière rendue une seule fois (renderExport sur une copie au format Carrousel, cadre de
+   cfg.cadres.carrousel), puis découpée en n JPEG de 1080 x H : la continuité entre diapositives est parfaite.
+   <nom>_carrousel-1.jpg ... dans <nom>_carrousel.zip (avec le .txt et la fiche), ou dans publication/ */
+function carrouselName(p, i){ return `${stemOfJpg(outName(p))}_carrousel-${i}.jpg`; }
+async function exportCarrousel(p){
+  $("busy").hidden = false; $("busy").textContent = "Carrousel...";
+  try {
+    const r = await renderExport(p, "carrousel", {canvas:true}), f = fmtOf(r.copy.cfg), band = r.canvas, h = band.height, entries = [];
+    for(let i = 0; i < f.n; i++){
+      const c = mkCanvas(SLIDE_W, h); c.getContext("2d").drawImage(band, i*SLIDE_W, 0, SLIDE_W, h, 0, 0, SLIDE_W, h);
+      entries.push({name:carrouselName(p, i + 1), blob:await withMeta(await toBlob(c, "image/jpeg", 0.92), r.copy.cfg.meta)});
+    }
+    const stem = `${stemOfJpg(outName(p))}_carrousel`, txt = pubTxt(p);
+    if(txt) entries.push({name:`${stem}.txt`, blob:txt});
+    if(S.dirWritable){
+      try { await writeEntries(entries); p.exported = true; renderFilm(); toast(`${f.n} diapositives enregistrées dans publication/ : publiez-les dans l'ordre.`); return; }
+      catch(e){ toast(`Écriture dans le dossier impossible (${e.message}) : ZIP téléchargé.`); }
+    }
+    if(S.zipFiches) entries.push({name:`${stemOfJpg(outName(p))}.esam.json`, blob:new Blob([ficheJson(p)], {type:"application/json"})});
+    $("busy").textContent = "ZIP...";
+    download(await zipBlob(entries), `${stem}.zip`);
+    p.exported = true; renderFilm();
+    toast(`${f.n} diapositives dans ${stem}.zip : publiez-les dans l'ordre.`);
   } catch(e){ toast(`Export impossible : ${e.message}`); }
   finally { $("busy").textContent = "Calcul..."; $("busy").hidden = true; }
 }

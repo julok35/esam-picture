@@ -707,6 +707,160 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   const nLs = await ipage.evaluate(() => Object.keys(localStorage).filter(k => /\|\d+\|\d+$/.test(k)).length);
   check(nLs === 40 && Object.keys(fi).filter(k => k.startsWith("LOT")).length === 45, `copie localStorage limitée aux 40 fiches les plus récentes (${nLs}), les 45 fiches d'un lot ancien toutes dans IndexedDB`);
 
+  // 0.14 : modèles de mise en page, avant / après, carrousel Instagram (page à part, photos neuves)
+  const npage = await ctxB.newPage();
+  npage.on("pageerror", e => errors.push(String(e)));
+  npage.on("console", m => { if (m.type() === "error") errors.push(m.text()); });
+  let answer = null;   // réponse aux boîtes de dialogue (nom d'un modèle, confirmation)
+  npage.on("dialog", d => { d.accept(answer == null ? undefined : answer).catch(() => {}); });
+  await npage.goto(base);
+  const nCfg = n => npage.evaluate(n => { const k = Object.keys(localStorage).find(k => k.startsWith(`esam-picture:${n}|`)); return k ? JSON.parse(localStorage.getItem(k)) : null; }, n);
+  const mods = () => npage.evaluate(() => JSON.parse(localStorage.getItem("esam-picture:modeles") || "[]"));
+  const nShot = () => npage.evaluate(() => document.getElementById("cv").toDataURL());
+  const nFilm = n => npage.waitForFunction(n => document.querySelectorAll("#film .th:not(.add)").length === n, n);
+  const nShow = sel => npage.$eval(sel, el => { const b = el.closest(".sub") || el, pn = document.getElementById("panel"); if (getComputedStyle(pn).overflowY === "auto") b.scrollIntoView({ block: "start" }); else window.scrollBy(0, b.getBoundingClientRect().top - document.querySelector(".left").getBoundingClientRect().bottom - 8); });
+  const pickPhoto = async n => { await npage.click(`#film .th[title^="${n}"]`); await npage.waitForTimeout(150); };
+  const pA = await fakePhoto(ctxB, 1600, 1200, "SEC_A.jpg"), pB = await fakePhoto(ctxB, 1200, 1600, "SEC_B.jpg");
+  await npage.setInputFiles("#fileIn", [pA]);
+  await npage.waitForSelector("#main:not([hidden])");
+  await npage.click('[data-tab="montage"]');
+  check(await npage.isDisabled('[data-act="avantApres"]'), "avant / après : bouton désactivé avec une seule photo chargée");
+  await npage.setInputFiles("#fileIn", [pB]); await nFilm(2);
+
+  // Modèles : intégrés proposés, enregistrement, application sur une autre photo, ajout, import, export, renommer, supprimer
+  await pickPhoto("SEC_A.jpg");
+  await npage.click('[data-tab="calques"]');
+  let mt = await npage.textContent("#modeles");
+  check(mt.includes("Publication standard") && mt.includes("Story") && (await npage.$$('#modeles [data-modact="del"]')).length === 0 && (await npage.isDisabled('[data-act="modSave"]')), "modèles intégrés proposés quand la liste est vide, non supprimables ; rien à enregistrer sans calque");
+  await npage.click('[data-addl="logo"]'); await npage.click('[data-addl="titre"]');
+  await npage.fill("textarea[data-ltext]", "Modèle test"); await npage.waitForTimeout(500);
+  await npage.click('[data-act="ldone"]');
+  answer = "Mon modèle"; await npage.click('[data-act="modSave"]'); await npage.waitForTimeout(200);
+  let ml = await mods();
+  check(ml.length === 1 && ml[0].nom === "Mon modèle" && ml[0].calques.length === 2 && ml[0].calques[1].texte === "Modèle test" && !ml[0].calques.some(l => l.id) && ml[0].grille && typeof ml[0].grille.n === "number", "modèle enregistré dans localStorage (calques et texte, grille, sans ids)");
+  mt = await npage.textContent("#modeles");
+  check(mt.includes("Mon modèle") && !mt.includes("Publication standard"), "liste des modèles : le modèle enregistré, plus les intégrés");
+  const noToast = () => npage.evaluate(() => { document.getElementById("toast").hidden = true; });
+  await noToast(); await nShow("#modeles"); await npage.waitForTimeout(200);
+  await npage.screenshot({ path: path.join(caps, `${label}_modeles.png`) });
+  const mid = ml[0].id, cfMA = await nCfg("SEC_A.jpg");
+  await pickPhoto("SEC_B.jpg");
+  await npage.click(`[data-modact="apply"][data-mid="${mid}"]`); await npage.waitForTimeout(250);
+  let cfMB = await nCfg("SEC_B.jpg");
+  check(cfMB.calques.length === 2 && cfMB.calques[0].type === "logo" && cfMB.calques[1].texte === "Modèle test" && cfMB.calques.every(l => l.id && !cfMA.calques.some(a => a.id === l.id)), "modèle appliqué sur une autre photo (textes repris, ids neufs)");
+  await npage.click("#undoBtn"); await npage.waitForTimeout(200);
+  check((await nCfg("SEC_B.jpg")).calques.length === 0, "appliquer un modèle : une entrée d'historique, annulable");
+  await npage.click("#redoBtn"); await npage.waitForTimeout(200);
+  await npage.click(`[data-modact="add"][data-mid="${mid}"]`); await npage.waitForTimeout(200);
+  check((await nCfg("SEC_B.jpg")).calques.length === 4, "« Ajouter » : les calques du modèle s'ajoutent à ceux de la photo");
+  const imp = { nom: "Importé", calques: [{ type: "legende", animal: "Rex", x: 0.5, y: 0.9 }, { type: "inconnu", x: 0.1 }, { type: "logo", mode: "logo", x: 2, s: 99 }] };
+  await npage.setInputFiles("#modeleIn", [{ name: "importe.esam-modele.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(imp)) }]);
+  await npage.waitForTimeout(300);
+  ml = await mods(); const mi = ml.find(m => m.nom === "Importé");
+  check(ml.length === 2 && mi && mi.calques.length === 2 && mi.calques[0].animal === "Rex" && mi.calques[0].date === "" && mi.calques[1].x === 1.2 && mi.calques[1].s === 5, "modèle importé depuis un JSON (type inconnu écarté, valeurs bornées comme une fiche)");
+  await npage.click(`[data-modact="apply"][data-mid="${mi.id}"]`); await npage.waitForTimeout(200);
+  cfMB = await nCfg("SEC_B.jpg");
+  check(cfMB.calques.length === 2 && cfMB.calques[0].animal === "Rex" && cfMB.calques[0].date === "2024-05-01", "modèle importé appliqué : la légende sans date prend la date de prise de vue");
+  const [dlmo] = await Promise.all([npage.waitForEvent("download"), npage.click(`[data-modact="export"][data-mid="${mid}"]`)]);
+  const mj = JSON.parse(fs.readFileSync(await dlmo.path(), "utf8"));
+  check(dlmo.suggestedFilename() === "Mon_modele.esam-modele.json" && mj.type === "modele" && mj.nom === "Mon modèle" && mj.calques.length === 2, `modèle exporté : ${dlmo.suggestedFilename()}`);
+  answer = "Mon modèle 2"; await npage.click(`[data-modact="rename"][data-mid="${mid}"]`); await npage.waitForTimeout(200);
+  check((await mods()).find(m => m.id === mid).nom === "Mon modèle 2", "modèle renommé");
+  answer = null; await npage.click(`[data-modact="del"][data-mid="${mi.id}"]`); await npage.waitForTimeout(200);
+  check((await mods()).length === 1, "modèle supprimé (après confirmation)");
+  // modèle par défaut : posé sur une photo ajoutée, pas sur une photo dont la fiche est reprise
+  const dJpg = path.join(caps, `${label}_SEC_D.jpg`);
+  fs.writeFileSync(dJpg, (await fakePhoto(ctxB, 1000, 800, "SEC_D.jpg")).buffer);   // fichier sur disque : même clé de fiche au retour
+  await npage.setInputFiles("#fileIn", dJpg); await nFilm(3);
+  await npage.click('[data-tab="cadre"]'); await npage.click('[data-fmt="paysage"]'); await npage.waitForTimeout(300);
+  await npage.click('[data-tab="export"]'); await npage.click('[data-act="remove"]'); await nFilm(2);
+  await npage.click('[data-tab="calques"]');
+  await npage.check(`[data-moddef="${mid}"]`); await npage.waitForTimeout(200);
+  check((await npage.evaluate(() => localStorage.getItem("esam-picture:modeleDefaut"))) === mid && await npage.isChecked(`[data-moddef="${mid}"]`), "« Appliquer aux nouvelles photos » : modèle par défaut mémorisé");
+  await npage.setInputFiles("#fileIn", [await fakePhoto(ctxB, 1200, 900, "SEC_C.jpg")]); await nFilm(3);
+  check((await npage.textContent("#pname")).includes("SEC_C.jpg") && (await npage.$$("[data-csel]")).length === 2 && (await npage.textContent("#panel")).includes("Titre : Modèle test"), "modèle par défaut posé d'office sur la photo ajoutée");
+  await npage.setInputFiles("#fileIn", dJpg); await nFilm(4);
+  check((await npage.textContent("#pname")).includes("SEC_D.jpg") && (await npage.$$("[data-csel]")).length === 0 && (await npage.textContent("#tagFmt")).includes("1200 x 628"), "photo dont la fiche est reprise : pas de modèle par défaut");
+
+  // Avant / après : deux bandes étiquetées, sens selon le format, photo « Après » choisie dans la liste
+  await pickPhoto("SEC_A.jpg");
+  await npage.click('[data-tab="montage"]');
+  check(await npage.isEnabled('[data-act="avantApres"]') && (await npage.textContent('[data-aapick][aria-pressed="true"]')).includes("SEC_B.jpg"), "avant / après : la photo suivante de la pellicule proposée en « Après »");
+  await npage.click('[data-act="avantApres"]'); await npage.waitForTimeout(400);
+  let mA = (await nCfg("SEC_A.jpg")).montage;
+  check(mA.mode === "bandes" && mA.bandes.length === 2 && mA.bandes[0].src === null && mA.bandes[0].etiquette === "Avant" && mA.bandes[1].src === "SEC_B.jpg" && mA.bandes[1].etiquette === "Après" && mA.sens === "v" && mA.sepCouleur === "#FFFFFF" && mA.sep > 0, "avant / après en carré : deux bandes côte à côte, étiquettes Avant et Après, séparateur blanc");
+  const aaKeys = Object.keys(await nCfg("SEC_A.jpg")).sort().join();
+  await noToast(); await npage.screenshot({ path: path.join(caps, `${label}_avant_apres.png`) });
+  await npage.click('[data-tab="cadre"]'); await npage.click('[data-fmt="portrait"]'); await npage.waitForTimeout(200);
+  await npage.click('[data-tab="montage"]');
+  await npage.click('[data-aapick]:has-text("SEC_C.jpg")'); await npage.click('[data-act="avantApres"]'); await npage.waitForTimeout(400);
+  mA = (await nCfg("SEC_A.jpg")).montage;
+  check(mA.sens === "h" && mA.bandes[1].src === "SEC_C.jpg" && mA.bandes[1].etiquette === "Après", "avant / après en portrait : bandes empilées, photo « Après » choisie dans la liste");
+  await noToast(); await npage.screenshot({ path: path.join(caps, `${label}_avant_apres_portrait.png`) });
+  check(Object.keys(await nCfg("SEC_A.jpg")).sort().join() === aaKeys, "avant / après : aucun nouveau champ dans la fiche");
+  await npage.click("#undoBtn"); await npage.waitForTimeout(200);
+  mA = (await nCfg("SEC_A.jpg")).montage;
+  check(mA.bandes[1].src === "SEC_B.jpg" && mA.sens === "v", "avant / après : une seule entrée d'historique");
+  await npage.click('[data-mmode="aucun"]'); await npage.waitForTimeout(200);
+
+  // Carrousel : format à part, lignes de coupe, export découpé en diapositives continues, logo de taille normale
+  await npage.click('[data-tab="cadre"]'); await npage.click('[data-fmt="carre"]'); await npage.waitForTimeout(200);
+  await npage.click('[data-tab="export"]');
+  const [dlq] = await Promise.all([npage.waitForEvent("download"), npage.click('[data-act="export"]')]);
+  const carreB64 = fs.readFileSync(await dlq.path()).toString("base64");
+  await npage.click('[data-tab="cadre"]'); await npage.click('[data-fmt="carrousel"]'); await npage.waitForTimeout(300);
+  check((await npage.textContent("#tagFmt")).includes("3240 x 1080") && (await npage.getAttribute('[data-carn="3"]', "aria-pressed")) === "true" && (await npage.getAttribute('[data-carforme="carre"]', "aria-pressed")) === "true", "format Carrousel : bande de 3 diapositives carrées, 3240 x 1080");
+  await noToast(); await npage.screenshot({ path: path.join(caps, `${label}_cadre_carrousel.png`) });
+  await npage.click('[data-tab="export"]'); await npage.waitForTimeout(200);
+  const shK0 = await nShot();
+  check(!(await npage.isVisible('[data-act="exportCar"]')), "bloc Carrousel replié par défaut");
+  await npage.click("#carBlock summary"); await npage.waitForTimeout(300);
+  const shK1 = await nShot();
+  check(shK1 !== shK0 && await npage.isVisible('[data-act="exportCar"]') && (await npage.textContent("#carBlock")).includes("Publiez les images dans l'ordre : le panorama défile d'une diapositive à l'autre"), "bloc Carrousel déplié : lignes de coupe sur l'aperçu, texte d'aide");
+  await noToast(); await nShow("#carBlock"); await npage.waitForTimeout(200);
+  await npage.screenshot({ path: path.join(caps, `${label}_export_carrousel.png`) });
+  const cfK = await nCfg("SEC_A.jpg");
+  check(cfK.format === "carrousel" && cfK.carrousel && cfK.carrousel.n === 3 && cfK.carrousel.forme === "carre" && cfK.cadres.carrousel && Math.abs(cfK.cadre.w / cfK.cadre.h * 1600 / 1200 - 3) < 1e-6, "fiche : format Carrousel, réglage {n, forme}, cadre au ratio 3:1 mémorisé");
+  const [dlk] = await Promise.all([npage.waitForEvent("download"), npage.click('[data-act="exportCar"]')]);
+  const kStem = "20240501_animal_secteur_photo-Com-ESAM_100000", zk = unzip(fs.readFileSync(await dlk.path())) || [];
+  const kj = zk.filter(e => e.name.endsWith(".jpg")).map(e => e.name);
+  check(dlk.suggestedFilename() === `${kStem}_carrousel.zip` && JSON.stringify(kj) === JSON.stringify([1, 2, 3].map(i => `${kStem}_carrousel-${i}.jpg`)) && zk.every(e => e.ok) && zk.some(e => e.name === `${kStem}.esam.json`), `carrousel exporté : ${dlk.suggestedFilename()} (${zk.map(e => e.name).join(", ")})`);
+  const kd = kj.map(n => (jpgDims(zk.find(e => e.name === n).data) || []).join("x"));
+  check(kd.length === 3 && kd.every(d => d === "1080x1080"), `diapositives de 1080 x 1080 (${kd.join(", ")})`);
+  zk.filter(e => e.name.endsWith(".jpg")).forEach(e => fs.writeFileSync(path.join(caps, `${label}_${e.name}`), e.data));   // à regarder : le panorama continu
+  const meas = await npage.evaluate(async ([s1, s2, sq]) => {
+    const load = b64 => new Promise(r => { const i = new Image(); i.onload = () => { const c = document.createElement("canvas"); c.width = i.naturalWidth; c.height = i.naturalHeight; const x = c.getContext("2d"); x.drawImage(i, 0, 0); r(x.getImageData(0, 0, c.width, c.height)); }; i.src = "data:image/jpeg;base64," + b64; });
+    const a = await load(s1), b = await load(s2), q = await load(sq);
+    const px = (d, x, y) => { const i = (y * d.width + x) * 4; return [d.data[i], d.data[i + 1], d.data[i + 2]]; };
+    const dist = (u, v) => (Math.abs(u[0] - v[0]) + Math.abs(u[1] - v[1]) + Math.abs(u[2] - v[2])) / 3;
+    let diff = 0, ref = 0;
+    for (let y = 0; y < a.height; y++) { diff += dist(px(a, a.width - 1, y), px(b, 0, y)); ref += dist(px(a, a.width - 1, y), px(a, 0, y)); }
+    // largeur du cartouche du logo (pixels sombres) sur la ligne de son centre (y = 0,1 de la hauteur)
+    const extent = d => { const y = Math.round(d.height * 0.1); let l = -1, r = -1; for (let x = 0; x < d.width; x++) { const p = px(d, x, y); if (0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2] < 50) { if (l < 0) l = x; r = x; } } return l < 0 ? 0 : r - l; };
+    return { diff: diff / a.height, ref: ref / a.height, logoQ: extent(q), logoK: extent(b) };
+  }, [zk.find(e => e.name === kj[0]).data.toString("base64"), zk.find(e => e.name === kj[1]).data.toString("base64"), carreB64]);
+  check(meas.diff < 8 && meas.diff * 3 < meas.ref, `continuité : bord droit de la diapositive 1 et bord gauche de la 2 proches (écart ${meas.diff.toFixed(1)}, contre ${meas.ref.toFixed(1)} d'un bord à l'autre d'une diapositive)`);
+  check(meas.logoK > 250 && meas.logoK < 700 && Math.abs(meas.logoK - meas.logoQ) <= 6, `logo de taille normale sur la diapositive 2 (${meas.logoK} px, ${meas.logoQ} px sur la photo carrée)`);
+  check((await nCfg("SEC_A.jpg")).format === "carrousel" && (await nShot()) === shK1, "export du carrousel : fiche et aperçu inchangés");
+  await npage.click('[data-carn="4"]'); await npage.waitForTimeout(150); await npage.click('[data-carforme="portrait"]'); await npage.waitForTimeout(300);
+  const cfK2 = await nCfg("SEC_A.jpg");
+  check((await npage.textContent("#tagFmt")).includes("4320 x 1350") && cfK2.carrousel.n === 4 && cfK2.carrousel.forme === "portrait" && Math.abs(cfK2.cadre.w / cfK2.cadre.h * 1600 / 1200 - 4320 / 1350) < 1e-6, "carrousel de 4 diapositives portrait : 4320 x 1350, cadre au nouveau ratio");
+  await npage.click("#carBlock summary"); await npage.waitForTimeout(200);
+  check(!(await npage.isVisible('[data-act="exportCar"]')) && !JSON.stringify(await nCfg("SEC_A.jpg")).includes("carBlock"), "bloc replié : rien de transitoire dans la fiche");
+  // reprise de la fiche dans une page vierge, lecture tolérante
+  const rpage = await ctxB.newPage();
+  rpage.on("pageerror", e => errors.push(String(e)));
+  await rpage.goto(base);
+  await rpage.setInputFiles("#fileIn", [pA]); await rpage.waitForSelector("#main:not([hidden])");
+  const ficheIn = o => rpage.setInputFiles("#ficheIn", [{ name: "SEC_A.jpg.esam.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(o)) }]).then(() => rpage.waitForTimeout(400));
+  await ficheIn(cfK2);
+  check((await rpage.textContent("#tagFmt")).includes("Carrousel 4 x portrait · 4320 x 1350"), "carrousel : fiche reprise (4 diapositives portrait)");
+  await ficheIn(Object.assign({}, cfK2, { carrousel: { n: "9", forme: "rond" } }));
+  check((await rpage.textContent("#tagFmt")).includes("5400 x 1080"), "fiche au carrousel illisible : valeurs bornées (5 diapositives carrées)");
+  const oldK = Object.assign({}, cfK2); delete oldK.carrousel;
+  await ficheIn(oldK);
+  check((await rpage.textContent("#tagFmt")).includes("3240 x 1080"), "fiche sans réglage de carrousel : 3 diapositives carrées par défaut");
+
   check(errors.length === 0, `aucune erreur de page (${errors.join(" | ").slice(0, 300)})`);
   await ctxB.close();
 }
