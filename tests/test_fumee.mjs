@@ -318,7 +318,7 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   const [dlm] = await Promise.all([page.waitForEvent("download"), page.click('[data-act="export"]')]);
   const outm = path.join(caps, `${label}_${dlm.suggestedFilename()}`); await dlm.saveAs(outm);
   const dimsm = await page.evaluate(async b64 => new Promise(r => { const i = new Image(); i.onload = () => r([i.naturalWidth, i.naturalHeight]); i.src = "data:image/jpeg;base64," + b64; }), fs.readFileSync(outm).toString("base64"));
-  check(dlm.suggestedFilename() === "DJI_0001_portrait_montage.jpg" && dimsm[0] === 1080 && dimsm[1] === 1350, `montage exporté ${dlm.suggestedFilename()} (${dimsm.join("x")})`);
+  check(dlm.suggestedFilename() === "20240501_Rex_Belledonne_photo-Com-ESAM_100000-montage.jpg" && dimsm[0] === 1080 && dimsm[1] === 1350, `montage exporté ${dlm.suggestedFilename()} (${dimsm.join("x")})`);
   await page.click('[data-tab="montage"]');
   await page.click('[data-act="mswap"]');
   await page.waitForTimeout(400);
@@ -336,11 +336,19 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   await page.click('[data-tab="export"]');
   await page.fill('[data-meta="description"]', "Chien secouru par l'ESAM");
   await page.waitForTimeout(500);
+  check((await page.textContent("#panel")).includes("20240501_Rex_Belledonne_photo-Com-ESAM_100000.jpg"), "nom du fichier déduit de la légende et de l'EXIF (date inversée, animal, secteur, heure)");
+  await page.fill('[data-nom="animaux"]', "Rex et Luna");
+  await page.fill('[data-nom="heure"]', "101530");
+  await page.waitForTimeout(500);
+  check((await page.textContent("#panel")).includes("20240501_Rex_et_Luna_Belledonne_photo-Com-ESAM_101530.jpg"), "nom du fichier modifié dans l'onglet Export");
+  await page.fill('[data-nom="animaux"]', "");
+  await page.fill('[data-nom="heure"]', "");
+  await page.waitForTimeout(500);
   await page.screenshot({ path: path.join(caps, `${label}_export.png`) });
   const [dl] = await Promise.all([page.waitForEvent("download"), page.click('[data-act="export"]')]);
   const out = path.join(caps, `${label}_${dl.suggestedFilename()}`); await dl.saveAs(out);
   const sz = fs.statSync(out).size;
-  check(dl.suggestedFilename() === "DJI_0001_portrait.jpg" && sz > 30000, `photo exportée ${dl.suggestedFilename()} (${sz} octets)`);
+  check(dl.suggestedFilename() === "20240501_Rex_Belledonne_photo-Com-ESAM_100000.jpg" && sz > 30000, `photo exportée ${dl.suggestedFilename()} (${sz} octets)`);
   const dims = await page.evaluate(async b64 => new Promise(r => { const i = new Image(); i.onload = () => r([i.naturalWidth, i.naturalHeight]); i.src = "data:image/jpeg;base64," + b64; }), fs.readFileSync(out).toString("base64"));
   check(dims[0] === 1080 && dims[1] === 1350, `dimensions de l'export ${dims.join("x")}`);
   const jb = fs.readFileSync(out), src = photos[0].buffer;
@@ -353,6 +361,7 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   const fichePath = path.join(caps, `${label}_fiche.json`); await dl2.saveAs(fichePath);
   const fiche = JSON.parse(fs.readFileSync(fichePath, "utf8"));
   check(fiche.format === "portrait" && fiche.flous.length === 3 && fiche.calques.length === 12 && fiche.filtre === "esam", "fiche JSON complète");
+  check(fiche.nom && fiche.nom.animaux === "" && fiche.nom.heure === "", "fiche : bloc nom (champs vides = déduits)");
   const fz = fiche.calques.find(l => l.type === "zoom");
   check(fz && fz.src === "IMG_portrait.jpg" && fz.forme === "rect" && fz.etiquette === "Zoom", "fiche : zoom incrusté conservé");
   check(fiche.montage.mode === "aucun" && fiche.montage.bandes.length === 2 && fiche.montage.fusion.src === "IMG_portrait.jpg", "fiche : montage conservé (bandes et superposition)");

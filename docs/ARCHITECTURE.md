@@ -20,7 +20,7 @@ Le CSS vient en premier (variables de la charte dans `:root`, mode sombre), puis
 |---|---|---|
 | utils | Échappement, slug, aléa déterministe, toast, téléchargement, texte multiligne | `esc`, `slug`, `rng`, `toast`, `download`, `wrapLines` |
 | modèle | État `S`, formats, filtres, fiche `cfg` par défaut, lecture tolérante d'une fiche, cadre maximal | `newCfg`, `defLayer`, `applyCfg`, `fixCadre`, `persist`, `restoreCfg` |
-| chargement | Décodage (orientation EXIF), image de travail, vignette, ajout à la pellicule | `decode`, `addPhotos` |
+| chargement | Décodage (orientation EXIF), date et heure de prise de vue (EXIF), image de travail, vignette, ajout à la pellicule | `decode`, `readShot`, `shotOfFile`, `addPhotos` |
 | dossier de travail | `showDirectoryPicker` (Chrome, Edge) avec reprise par IndexedDB, repli `webkitdirectory`, écriture des fiches et des exports | `openDir`, `walkDir`, `importFolder`, `writeInDir`, `scheduleFicheWrite` |
 | rendu : base | Rotation, recadrage, mise à l'échelle, couleurs par pixel (tables par canal, saturation, teinte, couleurs conservées, vignettage) | `baseCanvas`, `applyColor`, `colorParams`, `keepWeight` |
 | rendu : montage | Composition avec d'autres photos chargées : bandeaux (bandes égales, cadre et étiquette par bande) ou superposition (photo posée en transparence, mode de fusion, fenêtre aux bords fondus) ; photos manquantes remplacées par un panneau | `readMontage`, `fixMontage`, `paneRects`, `montageCanvas`, `drawBandes`, `drawFusion`, `prepCanvas`, `heatCanvas`, `fusionBox`, `fenetreBox` |
@@ -29,14 +29,14 @@ Le CSS vient en premier (variables de la charte dans `:root`, mode sombre), puis
 | aperçu | Vue « cadre » (photo entière + cadre) ou « sortie » (image finale + poignées) ; `V` décrit l'espace courant ; en Montage, étiquettes nommant la photo du dessous et celle du dessus (ou de chaque bande), vue « dessous seul » ou « dessus seul » (`S.mview`, transitoire) | `draw`, `drawOutView`, `drawCropView`, `layoutCanvas`, `tagOn` |
 | interactions | Un doigt : déplacer ou poignée (taille, rotation, largeur, hauteur) ; deux doigts : pincement ; molette ; clavier ; grille magnétique des calques ; double toucher = saisie du texte ; dans Couleur, lasso d'un seul trait (`S.lasso`, `endLasso`) et choix d'une zone au toucher (`inPoly`) ; dans Montage : la photo d'une bande suit le doigt (son cadre va dans l'autre sens), la photo superposée ou sa fenêtre se manipule comme un calque ; pour un zoom incrusté, `S.lsub` choisit ce que le doigt règle : la loupe, la zone grossie (anneau sur la photo) ou le cadrage dans la loupe (la photo incrustée suit le doigt) | `curObj`, `pick`, `applyGesture`, `applyWidth`, `applyHeight`, `snapLayer`, `drawGrid`, `lassoOn`, `endLasso`, événements `pointer*` |
 | pellicule et panneaux | Vignettes (avec le rôle de chaque photo dans la composition de la photo choisie : dessous, dessus, bande n, loupe), sélection, onglets ; l'onglet Couleur règle au choix la photo de base ou une photo de la composition (`S.csrc`, fiche de cette photo), avec des raccourcis depuis Montage et la loupe (`data-ctab`) ; un panneau par onglet reconstruit par `renderPanel`, gestionnaires délégués sur `#panel` ; dans Calques, le réglage du calque choisi (`#leditor`) vient en tête du panneau | `renderFilm`, `composition`, `filmRoles`, `colorTarget`, `goTab`, `select`, `renderPanel`, `layerEditor`, `revealEditor`, `focusEditor` |
-| export | Rendu plein format dans un cache à part, JPEG 92 %, métadonnées ESAM à la place de celles d'origine, dossier ou téléchargement, partage, export groupé | `renderExport`, `withMeta`, `exifSeg`, `xmpSeg`, `exportPhoto`, `sharePhoto`, `exportAll` |
+| export | Nom du fichier (date d'intervention inversée, animaux, secteur, photo-Com-ESAM, heure de prise de vue), rendu plein format dans un cache à part, JPEG 92 %, métadonnées ESAM à la place de celles d'origine, dossier ou téléchargement, partage, export groupé | `nomParts`, `outName`, `renderExport`, `withMeta`, `exifSeg`, `xmpSeg`, `exportPhoto`, `sharePhoto`, `exportAll` |
 | vidéos | Pellicule, dialogue `#vdlg`, capture de l'image courante en pleine résolution | `addVideos`, `openVideo`, `videoThumb` |
 
 Conventions du script : rendu par `innerHTML` et gabarits avec `esc()` sur toute valeur venant des données ; gestionnaires posés une fois sur les conteneurs, lisant des attributs `data-*` ; fonctions déclarées, état en `const`/`let`.
 
 ## 3. Modèle de données
 
-`S.photos[]` : `{id, name, path, file, key, w, h, img, thumb, cfg, cache, modified, exported}`. `img` est un canvas de travail (côté long 2560 px au plus), `key` = nom, taille et date du fichier (clé localStorage). `S.videos[]` : `{id, name, path, file, url, thumb, n}`.
+`S.photos[]` : `{id, name, path, file, key, w, h, img, thumb, cfg, cache, modified, exported, prise}`. `prise` = `{date, heure}` de prise de vue lue dans l'EXIF du fichier d'origine (`readShot` : DateTimeOriginal, sinon DateTime), repli sur la date de modification du fichier (`shotOfFile`). `img` est un canvas de travail (côté long 2560 px au plus), `key` = nom, taille et date du fichier (clé localStorage). `S.videos[]` : `{id, name, path, file, url, thumb, n}`.
 
 `cfg`, la fiche de configuration (exportée telle quelle en JSON, `version: 1`) :
 
@@ -74,7 +74,11 @@ montage    {mode: aucun|bandes|fusion, sens: v|h, sep, sepCouleur, bandes, fusio
                fondu, contour} en fraction de la photo superposée (elle suit son alignement)
 grille     {aimant, n: 6|12|24}  grille magnétique des calques (pas carré W/n) ; la dernière valeur choisie sert de défaut
 meta       {auteur, droits, description}  métadonnées écrites dans le JPEG exporté ; auteur et droits choisis en dernier servent de défaut
+nom        {date (AAAA-MM-JJ), animaux, secteur, heure (hhmmss)}  champs du nom du fichier exporté ; un champ vide est déduit
+             (date, animaux et secteur de la légende, date et heure de prise de vue de la photo d'origine)
 ```
+
+Nom du fichier exporté (`outName`, valeurs effectives par `nomParts`) : `AAAAMMJJ_animaux_secteur_photo-Com-ESAM_hhmmss.jpg`, le code unique étant l'heure de prise de vue ; si deux photos chargées donnent le même nom, un rang est ajouté au code (`hhmmss-2`) ; un montage ajoute `-montage` après le code. Les champs se règlent dans l'onglet Export (`data-nom`) ; « Copier les réglages » reporte la date, les animaux et le secteur (pas le code).
 
 Le titre ne revient à la ligne qu'aux retours saisis (sa taille ne dépend que de `s`, `ex` et `ey`) ; le texte revient à la ligne dans une zone de largeur `larg` (fraction de W), indépendante de `s`. Le coin est recalé dans son angle à chaque rendu (`placeCoin`). Les champs commençant par `_` (`_box`) sont des données de travail, exclues de la fiche (`noPriv`).
 
@@ -107,6 +111,8 @@ Flous sans `ctx.filter` : la région est réduite en plusieurs passes puis remon
 `node tests/test_fumee.mjs` : sert le dossier par HTTP, fabrique deux photos et une vidéo WebM dans le navigateur, puis en 390x844 (tactile) et 1400x900 : chargement, formats, zoom et déplacement du cadre, filtre et curseur de couleur, trois zones de flou, six calques, cinq éléments de cadre, saisie du texte à l'ajout, déplacement d'un calque à la souris, aimantation sur la grille et désactivation, zoom incrusté (anneau de la zone déplacé à la souris, grossissement, photo de la caméra zoom incrustée et cadrée dans la loupe, badge dans la pellicule, forme rectangle, étiquette), montage (bandeaux : choix et cadrage d'une bande à la souris, étiquette, bandes empilées ; superposition : panneau dessous / dessus, badges de la pellicule, vue « le dessus seul », opacité, déplacement de la photo superposée, fenêtre ovale déplacée, export du montage avec son suffixe, inversion dessous / dessus dans les deux sens), export JPEG (nom, dimensions et métadonnées vérifiés : la photo de test porte un EXIF de téléphone avec auteur, date et GPS, absents de l'export), export de la fiche, reprise de la fiche dans une page vierge, extraction d'une image de vidéo. Captures dans `tests/captures/` (ignorées par git).
 
 ## 6. Changelog
+
+- 0.10 (2026-11-02) : les photos exportées sont nommées `AAAAMMJJ_animaux_secteur_photo-Com-ESAM_hhmmss.jpg` (date de l'intervention inversée, noms des animaux, secteur, heure de prise de vue comme code unique). Les champs sont remplis d'après la légende et l'EXIF de la photo d'origine, et se corrigent dans l'onglet Export ; la légende ajoutée prend la date de prise de vue par défaut.
 
 - 0.9 (2026-10-31) : zones au lasso pour les couleurs conservées : entourer les secouristes d'un seul trait sur l'aperçu pour que les couleurs ne restent que là, ou entourer un détail gênant (végétation, panneau) avec une zone « tout en gris » ; zones choisies au toucher, modifiables, supprimables, suivant la rotation ; enregistrées dans la fiche.
 - 0.8 (2026-10-31) : couleurs conservées dans l'onglet Couleur : la photo passe en noir et blanc sauf les couleurs choisies (jaune fluo et rouge vif des tenues par défaut ; orange, vert, bleu, rose et violet au choix), avec tolérance, seuil (la peau et les rochers restent gris) et renfort des couleurs conservées. Réglage enregistré dans la fiche, copié avec les autres réglages de couleur.

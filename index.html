@@ -250,7 +250,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 /* Photos ESAM : préparation d'images pour les réseaux sociaux. Un seul fichier, pas de build, ES2017.
    Sections : utils, modèle, formats, chargement, dossier de travail, rendu (base, couleur, flous, calques),
    aperçu et interactions, panneaux, export, démarrage. Voir docs/ARCHITECTURE.md. */
-const APP_VERSION = "0.9";
+const APP_VERSION = "0.10";
 const $ = id => document.getElementById(id);
 
 /* ---------- utils ---------- */
@@ -347,7 +347,16 @@ function srcW(p){ return p.cfg.rotation % 180 ? p.h : p.w; }
 function srcH(p){ return p.cfg.rotation % 180 ? p.w : p.h; }
 function newCfg(name){
   return {version:1, app:"esam-picture", fichier:name, format:"carre", cadre:null, rotation:0,
-    couleur:{lum:0, contraste:0, sat:0, temp:0, vignette:0}, filtre:"aucun", selectif:readSelectif(null), flous:[], calques:[], montage:newMontage(), grille:gridPref(), meta:readMeta(metaPref())};
+    couleur:{lum:0, contraste:0, sat:0, temp:0, vignette:0}, filtre:"aucun", selectif:readSelectif(null), flous:[], calques:[], montage:newMontage(), grille:gridPref(), meta:readMeta(metaPref()), nom:readNom(null)};
+}
+/* nom du fichier exporté : AAAAMMJJ_animaux_secteur_photo-Com-ESAM_hhmmss.jpg ; chaque champ vide est déduit
+   (date, animaux et secteur de la légende ; heure de prise de vue lue dans l'EXIF de la photo d'origine) */
+function readNom(n){
+  const o = {date:"", animaux:"", secteur:"", heure:""};
+  if(n && typeof n === "object") Object.keys(o).forEach(k => { if(typeof n[k] === "string") o[k] = clean(n[k]).trim().slice(0, 80); });
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(o.date)) o.date = "";
+  o.heure = o.heure.replace(/\D/g, "").slice(0, 6);
+  return o;
 }
 /* couleurs conservées : lecture tolérante (fiche ancienne : réglage inactif) */
 function readSelectif(x){
@@ -430,6 +439,7 @@ function applyCfg(p, d){
   c.montage = readMontage(d.montage);
   if(d.grille && typeof d.grille === "object") c.grille = readGrille(d.grille);
   if(d.meta && typeof d.meta === "object") c.meta = readMeta(d.meta);
+  c.nom = readNom(d.nom);
   p.cfg = c; fixCadre(p); p.cache = {};
   return true;
 }
@@ -476,6 +486,39 @@ async function decode(file){
   if(src.close) src.close();
   return c;
 }
+/* date et heure de prise de vue dans l'EXIF du fichier d'origine (DateTimeOriginal, sinon DateTime) :
+   {date:"AAAA-MM-JJ", heure:"hhmmss"} ou null ; ne lit que les 256 premiers ko, tolère tout fichier non JPEG */
+async function readShot(file){
+  try {
+    const b = new Uint8Array(await new Response(file.slice(0, 262144)).arrayBuffer());
+    if(b[0] !== 0xFF || b[1] !== 0xD8) return null;
+    let i = 2, t = -1;
+    while(i + 4 < b.length && b[i] === 0xFF){
+      const mk = b[i + 1], len = b[i + 2] << 8 | b[i + 3];
+      if(mk === 0xDA) break;
+      if(mk === 0xE1 && b[i + 4] === 0x45 && b[i + 5] === 0x78 && b[i + 6] === 0x69 && b[i + 7] === 0x66){ t = i + 10; break; }
+      i += 2 + len;
+    }
+    if(t < 0 || t + 8 > b.length) return null;
+    const le = b[t] === 0x49, u16 = o => le ? b[o] | b[o + 1] << 8 : b[o] << 8 | b[o + 1], u32 = o => le ? (b[o] | b[o + 1] << 8 | b[o + 2] << 16 | b[o + 3] << 24) >>> 0 : (b[o] << 24 | b[o + 1] << 16 | b[o + 2] << 8 | b[o + 3]) >>> 0;
+    const str = (o, n) => { let s = ""; for(let k = 0; k < n && o + k < b.length; k++){ const ch = b[o + k]; if(!ch) break; s += String.fromCharCode(ch); } return s; };
+    let dt = "", dto = "";
+    const ifd = (o, depth) => {
+      if(o + 2 > b.length || depth > 2) return;
+      const n = u16(t + o);
+      for(let k = 0; k < n; k++){
+        const e = t + o + 2 + k*12; if(e + 12 > b.length) return;
+        const tag = u16(e), cnt = u32(e + 4), at = cnt > 4 ? t + u32(e + 8) : e + 8;
+        if(tag === 0x9003) dto = str(at, cnt); else if(tag === 0x0132) dt = str(at, cnt); else if(tag === 0x8769 && !depth) ifd(u32(e + 8), depth + 1);
+      }
+    };
+    ifd(u32(t + 4), 0);
+    const m = /^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})/.exec(dto || dt);
+    return m ? {date:`${m[1]}-${m[2]}-${m[3]}`, heure:`${m[4]}${m[5]}${m[6]}`} : null;
+  } catch(e){ return null; }
+}
+/* repli : date de modification du fichier (téléphone : souvent la prise de vue) */
+function shotOfFile(file){ const d = new Date(file.lastModified || Date.now()), z = n => String(n).padStart(2, "0"); return {date:`${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}`, heure:`${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}`}; }
 function makeThumb(img){
   const k = 160/Math.min(img.width, img.height), c = mkCanvas(Math.min(160, img.width*k), Math.min(160, img.height*k)), x = c.getContext("2d");
   const sw = c.width/k, sh = c.height/k;
@@ -493,7 +536,7 @@ async function addPhotos(items, fiches){
     let img;
     try { img = await decode(it.file); }
     catch(e){ toast(`${it.file.name} : ${e.message}`); continue; }
-    const p = {id:uid(), name:it.file.name, path:it.path || it.file.name, file:it.file, key:key, w:img.width, h:img.height, img:img, thumb:makeThumb(img), cfg:newCfg(it.file.name), cache:{}, modified:false};
+    const p = {id:uid(), name:it.file.name, path:it.path || it.file.name, file:it.file, key:key, w:img.width, h:img.height, img:img, thumb:makeThumb(img), cfg:newCfg(it.file.name), cache:{}, modified:false, prise:(await readShot(it.file)) || shotOfFile(it.file)};
     fixCadre(p);
     const fiche = (fiches && (fiches[p.path] || fiches[p.name])) || pendingFiches[p.path] || pendingFiches[p.name];
     if(fiche){ if(applyCfg(p, fiche)) p.modified = true; }
@@ -1793,11 +1836,17 @@ function renderPanel(){
     } else h += `<p class="hint">Aucun élément pour l'instant : ajoutez le logo, un titre, un texte, une légende, une flèche, un cercle ou des éléments de cadre.</p>`;
   } else if(S.tab === "export"){
     const o = outSize(p), f = fmtOf(c), name = outName(p);
-    h += `<div class="card"><div class="kv">Photo : <b>${esc(p.path)}</b></div><div class="kv">Format : <b>${esc(f.nom)}</b> (${esc(f.res)}), <b>${o.W} x ${o.H}</b> px, JPEG</div><div class="kv">Fichier exporté : <b>${esc(name)}</b></div>`;
+    h += `<div class="card"><div class="kv">Photo : <b>${esc(p.path)}</b></div><div class="kv">Format : <b>${esc(f.nom)}</b> (${esc(f.res)}), <b>${o.W} x ${o.H}</b> px, JPEG</div><div class="kv">Fichier exporté : <b data-outname="1">${esc(name)}</b></div>`;
     if(isMontage(p)){ const m = c.montage, fq = m.fusion ? photoOf(p, m.fusion.src) : null; h += `<div class="kv">Montage : <b>${m.mode === "bandes" ? `${m.bandes.length} bandeaux ${m.sens === "h" ? "empilés" : "côte à côte"}` : `superposition de ${esc(fq ? fq.name : (m.fusion && m.fusion.src) || "photo manquante")} (dessus) sur ${esc(p.name)} (dessous)`}</b></div>`; }
     const loupes = c.calques.filter(l => l.type === "zoom"); if(loupes.length) h += `<div class="kv">Zoom incrusté : <b>${loupes.map(l => l.src ? esc(l.src) : "une zone de la photo").join(", ")}</b></div>`;
     if(S.dirWritable) h += `<div class="kv">Dossier de travail : les exports vont dans <b>publication/</b>, la fiche est enregistrée à côté de la photo ${p.ficheOk ? "(à jour)" : ""}.</div>`;
     h += `</div>`;
+    const np = nomParts(p), nn = readNom(c.nom);
+    h += `<div class="grp"><span class="lbl">Nom du fichier exporté</span><p class="hint">Date de l'intervention, animaux, secteur, « photo-Com-ESAM » et heure de prise de vue (code unique). Les champs vides sont remplis d'après la légende et la photo d'origine.</p></div>`
+      + `<div class="grp"><span class="lbl">Date de l'intervention</span><input class="field" type="date" data-nom="date" value="${esc(nn.date || np.date)}"></div>`
+      + `<div class="grp"><span class="lbl">Noms des animaux</span><input class="field" data-nom="animaux" value="${esc(nn.animaux)}" placeholder="${esc(np.animaux || "Ex. : Rex et Luna")}"></div>`
+      + `<div class="grp"><span class="lbl">Secteur</span><input class="field" data-nom="secteur" list="secteurs" value="${esc(nn.secteur)}" placeholder="${esc(np.secteur || "Ex. : Belledonne")}"><datalist id="secteurs">${S.secteurs.map(s => `<option value="${esc(s)}">`).join("")}</datalist></div>`
+      + `<div class="grp"><span class="lbl">Code unique (hhmmss de la prise de vue)</span><input class="field" data-nom="heure" inputmode="numeric" maxlength="6" value="${esc(nn.heure)}" placeholder="${esc(np.heure)}"></div>`;
     const m = c.meta || readMeta(null);
     h += `<div class="grp"><span class="lbl">Métadonnées du fichier exporté</span><p class="hint">Rien n'est repris de la photo d'origine : ni localisation GPS, ni date de prise de vue, ni auteur, ni appareil. Le fichier porte à la place les informations ci-dessous.</p></div>`
       + `<div class="grp"><span class="lbl">Auteur</span><input class="field" data-meta="auteur" value="${esc(m.auteur)}"></div>`
@@ -1805,7 +1854,7 @@ function renderPanel(){
       + `<div class="grp"><span class="lbl">Description (facultative)</span><input class="field" data-meta="description" value="${esc(m.description)}" placeholder="Ex. : Chien secouru par l'ESAM"><p class="hint">Évitez d'y mettre un lieu précis ou une date.</p></div>`;
     h += `<div class="actions"><button type="button" class="btn primary" data-act="export">Exporter la photo</button>${navigator.canShare ? `<button type="button" class="btn" data-act="share">Partager...</button>` : ""}</div>`;
     h += `<div class="grp"><span class="lbl">Fiche de configuration (pour reprendre l'édition plus tard)</span><div class="actions"><button type="button" class="btn small ghost" data-act="fiche">Exporter la fiche (JSON)</button><label class="btn small ghost" tabindex="0" for="ficheIn">Importer une fiche</label></div><p class="hint">La fiche décrit tout ce qui a été fait sur la photo (format, cadre, couleurs, flous, calques). Avec un dossier de travail ouvert sur ordinateur, elle est enregistrée automatiquement (${esc(p.name)}.esam.json) et reprise à l'ouverture suivante.</p></div>`;
-    h += `<div class="grp"><span class="lbl">Toutes les photos</span><div class="actions"><button type="button" class="btn small ghost" data-act="exportAll">Exporter toutes les photos modifiées</button><button type="button" class="btn small ghost" data-act="ficheAll">Exporter toutes les fiches</button><button type="button" class="btn small ghost" data-act="applyAll"${S.photos.length > 1 ? "" : " disabled"}>Copier les réglages de cette photo vers les autres</button></div><p class="hint">« Copier les réglages » reporte le format, les couleurs, le filtre, le logo, la légende, l'auteur et les droits (pas le cadre, ni les flous, ni les flèches, ni la description).</p></div>`;
+    h += `<div class="grp"><span class="lbl">Toutes les photos</span><div class="actions"><button type="button" class="btn small ghost" data-act="exportAll">Exporter toutes les photos modifiées</button><button type="button" class="btn small ghost" data-act="ficheAll">Exporter toutes les fiches</button><button type="button" class="btn small ghost" data-act="applyAll"${S.photos.length > 1 ? "" : " disabled"}>Copier les réglages de cette photo vers les autres</button></div><p class="hint">« Copier les réglages » reporte le format, les couleurs, le filtre, le logo, la légende, la date, les animaux et le secteur du nom de fichier, l'auteur et les droits (pas le cadre, ni les flous, ni les flèches, ni la description, ni le code unique).</p></div>`;
     h += `<div class="grp"><span class="lbl">Cette photo</span><div class="actions"><button type="button" class="btn small ghost" data-act="reset">Tout réinitialiser</button><button type="button" class="btn small ghost danger" data-act="remove">Retirer de la liste</button></div></div>`;
   }
   box.innerHTML = h;
@@ -1890,7 +1939,19 @@ function focusEditor(){
   try { f.focus({preventScroll:true}); } catch(e){ f.focus(); }
   if(f.setSelectionRange){ const n = f.value.length; f.setSelectionRange(n, n); }
 }
-function outName(p){ return `${slug(baseName(p.name)) || "photo"}_${fmtOf(p.cfg).id}${isMontage(p) ? "_montage" : ""}.jpg`; }
+/* valeurs effectives du nom : champ saisi, sinon déduit (légende, prise de vue) */
+function nomParts(p){
+  const n = readNom(p.cfg.nom), l = p.cfg.calques.find(x => x.type === "legende") || {}, s = p.prise || shotOfFile(p.file || {});
+  const date = n.date || (/^\d{4}-\d{2}-\d{2}$/.test(l.date || "") ? l.date : "") || s.date;
+  return {date:date, animaux:n.animaux || clean(l.animal || "").trim(), secteur:n.secteur || clean(l.secteur || "").trim(), heure:n.heure || s.heure};
+}
+/* nom du fichier exporté : AAAAMMJJ_animaux_secteur_photo-Com-ESAM_hhmmss.jpg (montage : « -montage » après le code) ;
+   si deux photos chargées donnent le même nom, un rang est ajouté au code (hhmmss-2) */
+function outName(p){
+  const base = q => { const n = nomParts(q); return `${n.date.replace(/-/g, "")}_${slug(n.animaux) || "animal"}_${slug(n.secteur) || "secteur"}_photo-Com-ESAM_${n.heure}`; };
+  const b = base(p), same = S.photos.filter(q => base(q) === b), k = same.indexOf(p);
+  return `${b}${k > 0 ? `-${k + 1}` : ""}${isMontage(p) ? "-montage" : ""}.jpg`;
+}
 function ficheJson(p){ return JSON.stringify(p.cfg, noPriv, 1); }
 function rememberSecteur(s){
   s = clean(s).trim(); if(!s) return;
@@ -1912,7 +1973,11 @@ function setZoomSrc(p, l, q){
 }
 function addLayer(p, type){
   const l = defLayer(type);
-  if(type === "legende"){ const prev = S.photos.map(x => x.cfg.calques.find(y => y.type === "legende")).find(Boolean); if(prev){ l.animal = prev.animal; l.date = prev.date; l.secteur = prev.secteur; } }
+  if(type === "legende"){
+    const prev = S.photos.map(x => x.cfg.calques.find(y => y.type === "legende")).find(Boolean);
+    if(prev){ l.animal = prev.animal; l.date = prev.date; l.secteur = prev.secteur; }
+    else { const n = readNom(p.cfg.nom); l.date = n.date || (p.prise && p.prise.date) || l.date; l.animal = n.animaux; l.secteur = n.secteur; }   // date de prise de vue par défaut
+  }
   if(type === "fleche" || type === "cercle"){ l.x = 0.5; l.y = 0.5; }
   if(type === "coin"){ const o = outSize(p); placeCoin(l, o.W, o.H); }
   if(type === "zoom"){
@@ -2027,6 +2092,13 @@ $("panel").addEventListener("input", e => {
   if(d.zoom !== undefined){ const m = maxCadre(p), o = c.cadre, w = m.w*v/100, cxp = o.x + o.w/2, cyp = o.y + o.h/2; o.w = w; o.h = w*srcW(p)/srcH(p)/(fmtOf(c).w/fmtOf(c).h); o.x = cxp - o.w/2; o.y = cyp - o.h/2; fixCadre(p); }
   else if(d.col){ const q = colorTarget(p); q.cfg.couleur[d.col] = v; if(q !== p){ q.cache = {}; clearTimeout(S.inputT2); S.inputT2 = setTimeout(() => persist(q), 400); } }
   else if(d.sel){ const q = colorTarget(p); q.cfg.selectif = readSelectif(q.cfg.selectif); q.cfg.selectif[d.sel] = clamp(Math.round(v), 0, 100); if(q !== p){ q.cache = {}; clearTimeout(S.inputT2); S.inputT2 = setTimeout(() => persist(q), 400); } }
+  else if(d.nom){
+    c.nom = readNom(c.nom); c.nom[d.nom] = clean(t.value).trim().slice(0, 80); c.nom = readNom(c.nom);
+    if(d.nom === "secteur") rememberSecteur(t.value);
+    const el = $("panel").querySelector(".kv b[data-outname]"); if(el) el.textContent = outName(p);
+    clearTimeout(S.inputT); S.inputT = setTimeout(() => persist(p), 400);
+    return;
+  }
   else if(d.meta){
     c.meta = c.meta || readMeta(null); c.meta[d.meta] = clean(t.value).slice(0, 300);
     if(d.meta !== "description") try { localStorage.setItem("esam-picture:meta", JSON.stringify({auteur:c.meta.auteur, droits:c.meta.droits})); } catch(err){}
@@ -2093,6 +2165,7 @@ function applyAll(p){
     x.cfg.format = c.format; x.cfg.cadre = null; fixCadre(x);
     copyColor(x.cfg, c, true);
     x.cfg.meta = Object.assign(readMeta(x.cfg.meta), {auteur:(c.meta || META_DEF).auteur, droits:(c.meta || META_DEF).droits});
+    x.cfg.nom = Object.assign(readNom(x.cfg.nom), {date:readNom(c.nom).date, animaux:readNom(c.nom).animaux, secteur:readNom(c.nom).secteur});
     x.cfg.calques = x.cfg.calques.filter(l => l.type !== "logo" && l.type !== "legende").concat(c.calques.filter(l => l.type === "logo" || l.type === "legende").map(l => Object.assign({}, l, {id:uid()})));
     x.cache = {}; persist(x);
   });
