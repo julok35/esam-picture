@@ -252,6 +252,86 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   await page.screenshot({ path: path.join(caps, `${label}_zoom_photo.png`) });
   await page.click('[data-act="ldone"]');
 
+  // Annuler / rétablir (un glissement entier = une entrée), dupliquer, monter / descendre, raccourcis clavier
+  const hb = await page.locator("header.top").boundingBox(), vb = await page.locator("#verBadge").boundingBox();
+  check(await page.isVisible("#undoBtn") && await page.isEnabled("#undoBtn") && await page.isVisible("#redoBtn") && vb.x + vb.width <= vp.width && vb.y + vb.height <= hb.y + hb.height, "en-tête : Annuler, Rétablir et version sur une ligne");
+  await page.click('button.sel:has-text("Cercle")');
+  await page.waitForTimeout(200);
+  cf = await cfgOf();
+  const ci = cf.calques.findIndex(l => l.type === "cercle"), cer0 = cf.calques[ci], ids0 = cf.calques.map(l => l.id);
+  const b9 = await page.locator("#cv").boundingBox();
+  await page.mouse.move(b9.x + b9.width / 2, b9.y + b9.height / 2); await page.mouse.down();
+  await page.mouse.move(b9.x + b9.width / 2 - 50, b9.y + b9.height / 2 + 20, { steps: 8 }); await page.mouse.up();
+  await page.waitForTimeout(300);
+  cf = await cfgOf();
+  const cer1 = cf.calques[ci];
+  check(cer1.x < cer0.x - 0.01 && cer1.y > cer0.y, `cercle déplacé à la souris (x ${cer0.x.toFixed(3)} -> ${cer1.x.toFixed(3)})`);
+  await page.click("#undoBtn"); await page.waitForTimeout(200);
+  cf = await cfgOf();
+  check(cf.calques[ci].x === cer0.x && cf.calques[ci].y === cer0.y && await page.isEnabled("#redoBtn"), "annuler : le glissement entier est défait d'un coup");
+  await page.click("#redoBtn"); await page.waitForTimeout(200);
+  cf = await cfgOf();
+  check(cf.calques[ci].x === cer1.x && cf.calques[ci].y === cer1.y && await page.isDisabled("#redoBtn"), "rétablir : le cercle revient à sa place");
+  await page.click('[data-act="ldup"]'); await page.waitForTimeout(200);
+  cf = await cfgOf();
+  const dup = cf.calques[ci + 1];
+  check(cf.calques.length === 13 && dup.type === "cercle" && dup.id !== cer1.id && Math.abs(dup.x - cer1.x - 0.03) < 1e-9 && Math.abs(dup.y - cer1.y - 0.03) < 1e-9 && dup.ar === cer1.ar && dup.ey === cer1.ey, "dupliquer : copie décalée posée juste au-dessus");
+  check(await page.$$eval("#panel .list li", lis => lis.findIndex(li => li.getAttribute("aria-selected") === "true")) === ci + 1, "la copie devient le calque choisi");
+  await page.click('[data-act="ldescendre"]'); await page.waitForTimeout(200);
+  cf = await cfgOf();
+  check(cf.calques[ci].id === dup.id && cf.calques[ci + 1].id === cer1.id, "descendre : la copie passe sous l'original");
+  await page.click('[data-act="lmonter"]'); await page.waitForTimeout(200);
+  cf = await cfgOf();
+  check(cf.calques[ci].id === cer1.id && cf.calques[ci + 1].id === dup.id, "monter : la copie repasse au-dessus");
+  await page.click(`button.sel[data-csel="${ids0[ids0.length - 1]}"]`); await page.waitForTimeout(200);
+  check(await page.isDisabled('[data-act="lmonter"]') && await page.isEnabled('[data-act="ldescendre"]'), "Monter désactivé pour le calque du dessus");
+  for (let i = 0; i < 3; i++) { await page.keyboard.press("Control+z"); await page.waitForTimeout(150); }
+  cf = await cfgOf();
+  check(cf.calques.length === 12 && cf.calques.map(l => l.id).join() === ids0.join(), "Ctrl+Z trois fois : monter, descendre et dupliquer défaits");
+  await page.keyboard.press("Control+y"); await page.waitForTimeout(150);
+  check((await cfgOf()).calques.length === 13, "Ctrl+Y : la copie revient");
+  await page.keyboard.press("Control+z"); await page.waitForTimeout(150);
+  await page.click(`button.sel[data-csel="${ids0[ids0.length - 1]}"]`); await page.waitForTimeout(200);
+  await page.keyboard.press("Control+d"); await page.waitForTimeout(200);
+  cf = await cfgOf();
+  check(cf.calques.length === 13 && cf.calques[12].type === "zoom" && cf.calques[12].id !== ids0[11], "Ctrl+D : le calque choisi est dupliqué");
+  await page.keyboard.press("Delete"); await page.waitForTimeout(200);
+  cf = await cfgOf();
+  check(cf.calques.map(l => l.id).join() === ids0.join(), "Suppr : la copie est supprimée");
+  await page.click('button.sel:has-text("Cercle")'); await page.waitForTimeout(200);
+  const s0 = (await cfgOf()).calques[ci].s;
+  await page.keyboard.type("+"); await page.waitForTimeout(200);
+  cf = await cfgOf();
+  check(Math.abs(cf.calques[ci].s - s0 * 1.05) < 1e-9, `touche + : calque agrandi de 5 % (s ${s0} -> ${cf.calques[ci].s.toFixed(3)})`);
+  await page.keyboard.press("Control+z"); await page.waitForTimeout(150);
+  const cad0 = (await cfgOf()).cadre;
+  check((await cfgOf()).calques[ci].s === s0, "Ctrl+Z : taille d'origine");
+  await page.keyboard.press("r"); await page.waitForTimeout(200);
+  check((await cfgOf()).rotation === 90, "touche R : photo tournée de 90 degrés");
+  await page.keyboard.press("Control+z"); await page.waitForTimeout(200);
+  cf = await cfgOf();
+  check(cf.rotation === 0 && JSON.stringify(cf.cadre) === JSON.stringify(cad0), "Ctrl+Z : rotation et cadre retrouvés");
+  await page.keyboard.press("4"); await page.waitForTimeout(150);
+  const t4 = await page.getAttribute('[data-tab="flous"]', "aria-selected");
+  await page.keyboard.press("5"); await page.waitForTimeout(150);
+  check(t4 === "true" && (await page.getAttribute('[data-tab="calques"]', "aria-selected")) === "true", "touches 4 et 5 : onglets Flous puis Calques");
+
+  // Avant / après : bouton « Original » maintenu, puis touche O ; l'aperçu normal revient à l'identique
+  await page.click('[data-act="ldone"]'); await page.waitForTimeout(300);
+  const shot = () => page.evaluate(() => document.getElementById("cv").toDataURL());
+  const avant = await shot();
+  const obx = await page.locator("#origBtn").boundingBox();
+  await page.mouse.move(obx.x + obx.width / 2, obx.y + obx.height / 2); await page.mouse.down(); await page.waitForTimeout(300);
+  const orig = await shot(), pressed = await page.getAttribute("#origBtn", "aria-pressed");
+  await page.screenshot({ path: path.join(caps, `${label}_original.png`) });
+  await page.mouse.up(); await page.waitForTimeout(300);
+  const apres = await shot();
+  check(pressed === "true" && orig !== avant && apres === avant, "bouton Original maintenu : l'aperçu montre la photo d'origine, puis revient");
+  await page.keyboard.down("o"); await page.waitForTimeout(300);
+  const origK = await shot();
+  await page.keyboard.up("o"); await page.waitForTimeout(300);
+  check(origK === orig && (await shot()) === avant, "touche O maintenue : même original, puis retour à l'aperçu");
+
   // Montage : bandeaux (deux bandes, cadrage de la deuxième à la souris), puis superposition avec fenêtre
   await page.click('[data-tab="montage"]');
   await page.click('[data-mmode="bandes"]');
