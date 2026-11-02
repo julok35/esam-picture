@@ -38,6 +38,32 @@ async function fakePhoto(ctxB, w, h, name) {
   const jpg = Buffer.from(b64, "base64");
   return { name, mimeType: "image/jpeg", buffer: Buffer.concat([jpg.subarray(0, 2), fakeExif(), jpg.subarray(2)]) };
 }
+/* grande photo (3000 x 2000 stockée, carré rouge en haut à gauche du stockage) avec une orientation EXIF 6 (à tourner de 90°
+   dans le sens horaire) : elle doit s'afficher en portrait 1707 x 2560, le carré rouge en haut à droite */
+async function fakeOriented(ctxB, name) {
+  const pg = await ctxB.newPage();
+  const b64 = await pg.evaluate(() => {
+    const c = document.createElement("canvas"); c.width = 3000; c.height = 2000; const x = c.getContext("2d");
+    x.fillStyle = "#2F6FE0"; x.fillRect(0, 0, 3000, 2000); x.fillStyle = "#E20C0F"; x.fillRect(0, 0, 700, 500);
+    return c.toDataURL("image/jpeg", 0.9).split(",")[1];
+  });
+  await pg.close();
+  const jpg = Buffer.from(b64, "base64"), u16 = v => [v >> 8 & 255, v & 255], u32 = v => [v >>> 24 & 255, v >> 16 & 255, v >> 8 & 255, v & 255];
+  const tiff = [0x4D, 0x4D, 0, 42, ...u32(8), ...u16(1), ...u16(0x0112), ...u16(3), ...u32(1), ...u16(6), 0, 0, 0, 0, 0, 0];
+  const body = [...Buffer.from("Exif\0\0"), ...tiff];
+  return { name, mimeType: "image/jpeg", buffer: Buffer.concat([jpg.subarray(0, 2), Buffer.from([0xFF, 0xE1, ...u16(body.length + 2), ...body]), jpg.subarray(2)]) };
+}
+/* lecture brute du magasin « fiches » d'IndexedDB : {clé: {cfg, t}} */
+const idbFiches = pg => pg.evaluate(() => new Promise((res, rej) => {
+  const r = indexedDB.open("esam-picture");
+  r.onerror = () => rej(r.error);
+  r.onsuccess = () => {
+    const db = r.result; if (!db.objectStoreNames.contains("fiches")) { db.close(); res(null); return; }
+    const tx = db.transaction("fiches", "readonly"), st = tx.objectStore("fiches"), out = {}, cur = st.openCursor();
+    cur.onsuccess = () => { const c = cur.result; if (!c) return; out[c.key] = c.value; c.continue(); };
+    tx.oncomplete = () => { db.close(); res(out); };
+  };
+}));
 /* EXIF d'un téléphone : auteur, date de prise de vue et position GPS, qui ne doivent pas se retrouver dans l'export */
 function fakeExif() {
   const u16 = v => [v >> 8 & 255, v & 255], u32 = v => [v >>> 24 & 255, v >> 16 & 255, v >> 8 & 255, v & 255];
@@ -85,6 +111,20 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   await page.waitForTimeout(300);
   const cadre2 = await page.evaluate(() => JSON.parse(localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith("esam-picture:DJI")))).cadre);
   check(cadre2.x > cadre.x, "cadre déplacé à la souris");
+  // Horizon : curseur sous la rotation, rendu différent, bouton 0 qui rend l'aperçu d'origine au pixel près
+  const shotCv = () => page.evaluate(() => document.getElementById("cv").toDataURL());
+  const setRange = (sel, v) => page.$eval(sel, (el, v) => { el.value = v; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); }, v);
+  check(await page.isVisible("input[data-incl]") && await page.isVisible('[data-act="incl0"]'), "curseur Horizon et bouton 0 dans l'onglet Cadre");
+  const sh0 = await shotCv();
+  await setRange("input[data-incl]", 5); await page.waitForTimeout(600);
+  const sh5 = await shotCv();
+  let cfI = await page.evaluate(() => JSON.parse(localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith("esam-picture:DJI")))));
+  check(cfI.inclinaison === 5 && sh5 !== sh0 && (await page.textContent("#panel")).includes("5°"), `horizon redressé de 5° : fiche (inclinaison=${cfI.inclinaison}) et aperçu changés`);
+  await page.screenshot({ path: path.join(caps, `${label}_cadre_horizon.png`) });
+  await page.click('[data-act="incl0"]'); await page.waitForTimeout(300);
+  cfI = await page.evaluate(() => JSON.parse(localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith("esam-picture:DJI")))));
+  check(cfI.inclinaison === 0 && (await shotCv()) === sh0, "bouton 0 : horizon d'origine, aperçu identique à l'origine");
+  await setRange("input[data-incl]", 5); await page.waitForTimeout(500);
 
   // Couleur
   await page.click('[data-tab="couleur"]');
@@ -93,6 +133,16 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   await page.waitForTimeout(500);
   await page.screenshot({ path: path.join(caps, `${label}_couleur.png`) });
   check((await page.getAttribute('[data-filtre="esam"]', "aria-pressed")) === "true", "filtre ESAM sélectionné");
+  // aperçu allégé pendant le glissement : demi-résolution tout de suite, pleine résolution 250 ms après, sans toucher au cache normal
+  const quick = await page.evaluate(async () => {
+    const el = document.querySelector('input[data-col="contraste"]'), cv = document.getElementById("cv"), frame = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    el.value = 32; el.dispatchEvent(new Event("input", { bubbles: true })); await frame();
+    const q = cv.toDataURL(); await new Promise(r => setTimeout(r, 600)); await frame();
+    return [q, cv.toDataURL()];
+  });
+  await page.keyboard.press("Control+z"); await page.waitForTimeout(200); await page.keyboard.press("Control+y"); await page.waitForTimeout(300);   // cache vidé : rendu à froid
+  const cold = await shotCv();
+  check(quick[0] !== quick[1] && quick[1] === cold, "curseur de couleur : aperçu allégé pendant le glissement, puis pleine résolution identique à un rendu à froid");
   // couleurs conservées : le reste en noir et blanc ; le fond bleu de la photo de test devient gris, puis redevient bleu si on garde le bleu
   const pixel = async () => page.evaluate(() => { const cv = document.getElementById("cv"), d = cv.getContext("2d").getImageData(Math.round(cv.width / 2), Math.round(cv.height / 2), 1, 1).data; return [d[0], d[1], d[2]]; });
   const px0 = await pixel();
@@ -139,6 +189,17 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   await page.click('[data-fmode="dynamique"]');
   await page.click('[data-act="addZone"]');
   check((await page.$$('[data-fsel]')).length === 3, "trois zones de flou ajoutées");
+  // flous en cache par zone : déplacer la première zone (les deux autres, qui la recouvrent, sont recalculées), puis la
+  // troisième (les deux premières sont reprises du cache) ; le rendu doit être celui d'un calcul à froid, au pixel près
+  const drag = async (dx, dy) => { const b = await page.locator("#cv").boundingBox(); await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2); await page.mouse.down(); await page.mouse.move(b.x + b.width / 2 + dx, b.y + b.height / 2 + dy, { steps: 6 }); await page.mouse.up(); await page.waitForTimeout(300); };
+  await page.click('[data-fsel]:nth-of-type(1)'); await drag(-60, -40);
+  const fl0 = await shotCv();
+  await page.click('[data-fsel]:nth-of-type(3)'); await drag(25, 30);
+  const warm = await shotCv();
+  await page.keyboard.press("Control+z"); await page.waitForTimeout(200);
+  await page.keyboard.press("Control+y"); await page.waitForTimeout(300);
+  const coldF = await shotCv();
+  check(warm !== fl0 && warm === coldF, "flous : rendu avec le cache par zone identique au rendu à froid, au pixel près");
   await page.screenshot({ path: path.join(caps, `${label}_flous.png`) });
 
   // Calques
@@ -307,7 +368,7 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   const cad0 = (await cfgOf()).cadre;
   check((await cfgOf()).calques[ci].s === s0, "Ctrl+Z : taille d'origine");
   await page.keyboard.press("r"); await page.waitForTimeout(200);
-  check((await cfgOf()).rotation === 90, "touche R : photo tournée de 90 degrés");
+  check((await cfgOf()).rotation === 90 && (await cfgOf()).inclinaison === 5, "touche R : photo tournée de 90 degrés, horizon conservé");
   await page.keyboard.press("Control+z"); await page.waitForTimeout(200);
   cf = await cfgOf();
   check(cf.rotation === 0 && JSON.stringify(cf.cadre) === JSON.stringify(cad0), "Ctrl+Z : rotation et cadre retrouvés");
@@ -440,7 +501,7 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   const [dl2] = await Promise.all([page.waitForEvent("download"), page.click('[data-act="fiche"]')]);
   const fichePath = path.join(caps, `${label}_fiche.json`); await dl2.saveAs(fichePath);
   const fiche = JSON.parse(fs.readFileSync(fichePath, "utf8"));
-  check(fiche.format === "portrait" && fiche.flous.length === 3 && fiche.calques.length === 12 && fiche.filtre === "esam", "fiche JSON complète");
+  check(fiche.format === "portrait" && fiche.flous.length === 3 && fiche.calques.length === 12 && fiche.filtre === "esam" && fiche.inclinaison === 5, "fiche JSON complète (horizon compris)");
   check(fiche.nom && fiche.nom.animaux === "" && fiche.nom.heure === "", "fiche : bloc nom (champs vides = déduits)");
   const fz = fiche.calques.find(l => l.type === "zoom");
   check(fz && fz.src === "IMG_portrait.jpg" && fz.forme === "rect" && fz.etiquette === "Zoom", "fiche : zoom incrusté conservé");
@@ -456,6 +517,13 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   await page2.click('[data-tab="calques"]');
   check((await page2.$$('[data-csel]')).length === 12, "fiche reprise : douze calques retrouvés");
   check((await page2.textContent("#tagFmt")).includes("1080 x 1350"), "fiche reprise : format portrait");
+  await page2.click('[data-tab="cadre"]');
+  check((await page2.inputValue("input[data-incl]")) === "5", "fiche reprise : horizon redressé de 5°");
+  // une fiche ancienne, sans inclinaison, reste lue (0)
+  const ancienne = JSON.parse(fs.readFileSync(fichePath, "utf8")); delete ancienne.inclinaison;
+  await page2.setInputFiles("#ficheIn", [{ name: "DJI_0001.jpg.esam.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(ancienne)) }]);
+  await page2.waitForTimeout(500);
+  check((await page2.inputValue("input[data-incl]")) === "0", "fiche d'avant 0.12 (sans horizon) : lue avec 0°");
   await page2.screenshot({ path: path.join(caps, `${label}_reprise.png`) });
 
   // Vidéo : extraction d'une image
@@ -485,8 +553,70 @@ for (const [label, vp] of [["telephone", { width: 390, height: 844 }], ["pc", { 
   const pn = await vpage.textContent("#pname");
   check(/DJI_0002_00m0[01]s\d\d\.jpg/.test(pn), `nom de l'image extraite : ${pn.trim()}`);
 
+  // Grande photo de téléphone avec orientation EXIF 6 : décodée directement à la taille de travail, dans le bon sens
+  const opage = await ctxB.newPage();
+  opage.on("pageerror", e => errors.push(String(e)));
+  await opage.goto(base);
+  await opage.setInputFiles("#fileIn", [await fakeOriented(ctxB, "IMG_48MP.jpg")]);
+  await opage.waitForSelector("#main:not([hidden])");
+  await opage.waitForTimeout(300);
+  const opx = (fx, fy) => opage.evaluate(([fx, fy]) => { const cv = document.getElementById("cv"), d = cv.getContext("2d").getImageData(Math.round(cv.width * fx), Math.round(cv.height * fy), 1, 1).data; return [d[0], d[1], d[2]]; }, [fx, fy]);
+  const ptr = await opx(0.95, 0.03), ptl = await opx(0.05, 0.03);
+  check((await opage.textContent("#pname")).includes("1707 x 2560") && ptr[0] > ptr[2] + 40 && ptl[2] > ptl[0] + 40, `orientation EXIF 6 respectée, image de travail 1707 x 2560 (haut droite ${ptr}, haut gauche ${ptl})`);
+  await opage.screenshot({ path: path.join(caps, `${label}_orientation.png`) });
+
+  // Fiches dans IndexedDB : fiche retrouvée après rechargement sans sa copie localStorage, reprise des fiches anciennes, purge à 90 jours
+  const idbJpg = path.join(caps, `${label}_IDB.jpg`);
+  fs.writeFileSync(idbJpg, (await fakePhoto(ctxB, 1200, 900, "IDB.jpg")).buffer);   // fichier sur disque : même date à chaque chargement
+  const ipage = await ctxB.newPage();
+  ipage.on("pageerror", e => errors.push(String(e)));
+  await ipage.goto(base);
+  await ipage.setInputFiles("#fileIn", idbJpg);
+  await ipage.waitForSelector("#main:not([hidden])");
+  await ipage.$eval("input[data-incl]", el => { el.value = -3.5; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await ipage.waitForTimeout(900);
+  let fi = await idbFiches(ipage);
+  const ik = fi && Object.keys(fi).find(k => k.startsWith(`${label}_IDB.jpg|`));
+  check(ik && JSON.parse(fi[ik].cfg).inclinaison === -3.5 && Date.now() - fi[ik].t < 60000, "fiche écrite dans IndexedDB (horodatée)");
+  await ipage.evaluate(() => new Promise((res, rej) => {
+    // une fiche de plus de 90 jours dans IndexedDB, une fiche d'avant 0.12 seulement dans localStorage, la copie de la photo effacée
+    Object.keys(localStorage).filter(k => k.includes("_IDB.jpg|")).forEach(k => localStorage.removeItem(k));
+    localStorage.setItem("esam-picture:ANCIENNE.jpg|12|34", JSON.stringify({ version: 1, format: "story", rotation: 0 }));
+    for (let i = 0; i < 45; i++) localStorage.setItem(`esam-picture:LOT${i}.jpg|1|${i}`, JSON.stringify({ version: 1, format: "carre" }));
+    const r = indexedDB.open("esam-picture");
+    r.onsuccess = () => { const db = r.result, tx = db.transaction("fiches", "readwrite"); tx.objectStore("fiches").put({ cfg: "{}", t: Date.now() - 100 * 864e5 }, "VIEILLE.jpg|1|1"); tx.oncomplete = () => { db.close(); res(); }; tx.onerror = () => rej(tx.error); };
+  }));
+  await ipage.reload(); await ipage.waitForTimeout(800);
+  await ipage.setInputFiles("#fileIn", idbJpg);
+  await ipage.waitForSelector("#main:not([hidden])");
+  await ipage.waitForTimeout(300);
+  check((await ipage.inputValue("input[data-incl]")) === "-3.5" && !(await ipage.evaluate(() => Object.keys(localStorage).some(k => k.includes("_IDB.jpg|")))), "fiche retrouvée après rechargement, depuis IndexedDB seul");
+  fi = await idbFiches(ipage);
+  check(!fi["VIEILLE.jpg|1|1"] && fi["ANCIENNE.jpg|12|34"] && JSON.parse(fi["ANCIENNE.jpg|12|34"].cfg).format === "story", "à l'ouverture : fiche de plus de 90 jours purgée, fiche de localStorage reprise dans IndexedDB");
+  const nLs = await ipage.evaluate(() => Object.keys(localStorage).filter(k => /\|\d+\|\d+$/.test(k)).length);
+  check(nLs === 40 && Object.keys(fi).filter(k => k.startsWith("LOT")).length === 45, `copie localStorage limitée aux 40 fiches les plus récentes (${nLs}), les 45 fiches d'un lot ancien toutes dans IndexedDB`);
+
   check(errors.length === 0, `aucune erreur de page (${errors.join(" | ").slice(0, 300)})`);
   await ctxB.close();
+}
+// Base IndexedDB de la version 1 (dossier de travail seul) : le passage en version 2 garde le dossier et ajoute les fiches
+{
+  console.log("\n== base IndexedDB d'avant 0.12");
+  const ctxU = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  await ctxU.addInitScript(() => {
+    if (location.pathname !== "/" || sessionStorage.getItem("v1")) return;
+    sessionStorage.setItem("v1", "1");
+    const r = indexedDB.open("esam-picture", 1);
+    r.onupgradeneeded = () => { r.result.createObjectStore("kv").put({ name: "Dossier test" }, "dossier"); };
+    r.onsuccess = () => { r.result.close(); };
+  });
+  const up = await ctxU.newPage();
+  const errs = []; up.on("pageerror", e => errs.push(String(e)));
+  await up.goto(base); await up.waitForTimeout(800);
+  const st = await up.evaluate(() => new Promise(res => { const r = indexedDB.open("esam-picture"); r.onsuccess = () => { const db = r.result, out = { v: db.version, stores: Array.from(db.objectStoreNames) }; const tx = db.transaction("kv", "readonly"), g = tx.objectStore("kv").get("dossier"); tx.oncomplete = () => { out.dossier = g.result && g.result.name; db.close(); res(out); }; }; }));
+  check(st.v === 2 && st.stores.includes("kv") && st.stores.includes("fiches") && st.dossier === "Dossier test", `base passée en version ${st.v} (${st.stores.join(", ")}), dossier de travail conservé`);
+  check(errs.length === 0, `aucune erreur de page (${errs.join(" | ").slice(0, 300)})`);
+  await ctxU.close();
 }
 await browser.close(); server.close();
 console.log(failures ? `\n${failures} échec(s)` : "\nTout est passé.");

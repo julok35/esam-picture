@@ -283,7 +283,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 /* Photos ESAM : préparation d'images pour les réseaux sociaux. Un seul fichier, pas de build, ES2017.
    Sections : utils, modèle, formats, chargement, dossier de travail, rendu (base, couleur, flous, calques),
    aperçu et interactions, panneaux, export, démarrage. Voir docs/ARCHITECTURE.md. */
-const APP_VERSION = "0.11";
+const APP_VERSION = "0.12";
 const $ = id => document.getElementById(id);
 
 /* ---------- utils ---------- */
@@ -331,6 +331,9 @@ function wrapLines(ctx, txt, maxW){
    S.photos : [{id, name, path, file, key, w, h, img (canvas de travail, côté long <= 2560), thumb, cfg, cache}]
    cfg (la fiche de configuration, exportée en JSON) :
      format, cadre {x, y, w, h} en fraction de l'image source, rotation (0/90/180/270),
+     inclinaison (redressement d'horizon, degrés de -15 à 15) : la source tournée autour du centre du cadre et agrandie
+       juste assez pour que le cadre reste couvert ; les zones en fraction de la source (flous, lasso, zoom) désignent la
+       source non inclinée et suivent la même transformation au rendu (voir inclOf),
      couleur {lum, contraste, sat, temp, vignette} de -100 à 100, filtre,
      selectif {actif, teintes, tolerance, seuil, renfort, zones} : couleurs conservées (tenues jaune fluo, rouge vif), le reste en noir
        et blanc ; zones [{id, sens: garder|exclure, pts:[[x, y], ...]}] tracées au lasso, en fraction de l'image source (comme les flous),
@@ -342,7 +345,7 @@ function wrapLines(ctx, txt, maxW){
        zone {x, y, w} centre et largeur en fraction de la source grossie, forme cercle|rect, ar, couleur, epais, lien, etiquette,
      montage {mode, sens, sep, sepCouleur, bandes, fusion} : composition avec d'autres photos chargées (voir « rendu : montage »). */
 const pendingFiches = {};   // fiches importées avant leurs photos, par nom de fichier
-const S = {photos:[], sel:null, tab:"cadre", mode:"calques", dirHandle:null, dirWritable:false, fsel:null, csel:null, lsub:"calque", csrc:null, msel:0, msub:"calque", mview:"deux", zsel:null, lasso:false, original:false, secteurs:[]};   // original : bouton « Original » maintenu (transitoire, jamais dans la fiche)
+const S = {photos:[], sel:null, tab:"cadre", mode:"calques", dirHandle:null, dirWritable:false, fsel:null, csel:null, lsub:"calque", csrc:null, msel:0, msub:"calque", mview:"deux", zsel:null, lasso:false, original:false, quick:false, secteurs:[]};   // original : bouton « Original » maintenu ; quick : aperçu allégé pendant le glissement d'un curseur (transitoires, jamais dans la fiche)
 const FORMATS = [
   {id:"carre", nom:"Carré 1:1", res:"Instagram, Facebook, LinkedIn", w:1080, h:1080},
   {id:"portrait", nom:"Portrait 4:5", res:"Instagram, Facebook", w:1080, h:1350},
@@ -379,7 +382,7 @@ function outSize(p){
 function srcW(p){ return p.cfg.rotation % 180 ? p.h : p.w; }
 function srcH(p){ return p.cfg.rotation % 180 ? p.w : p.h; }
 function newCfg(name){
-  return {version:1, app:"esam-picture", fichier:name, format:"carre", cadre:null, rotation:0,
+  return {version:1, app:"esam-picture", fichier:name, format:"carre", cadre:null, rotation:0, inclinaison:0,
     couleur:{lum:0, contraste:0, sat:0, temp:0, vignette:0}, filtre:"aucun", selectif:readSelectif(null), flous:[], calques:[], montage:newMontage(), grille:gridPref(), meta:readMeta(metaPref()), nom:readNom(null)};
 }
 /* nom du fichier exporté : AAAAMMJJ_animaux_secteur_photo-Com-ESAM_hhmmss.jpg ; chaque champ vide est déduit
@@ -407,6 +410,9 @@ function copyColor(to, from, keepZones){
   to.couleur = Object.assign({}, from.couleur); to.filtre = from.filtre; to.selectif = readSelectif(Object.assign({}, from.selectif, {zones:zones}));
 }
 function colKey(cfg){ return [cfg.couleur, cfg.filtre, cfg.selectif]; }
+/* redressement d'horizon : degrés, de -15 à 15, au dixième */
+const INCL_MAX = 15;
+function readIncl(v){ return clamp(Math.round((+v || 0)*10)/10, -INCL_MAX, INCL_MAX) || 0; }
 /* grille magnétique des calques : réglage de la fiche, la dernière valeur choisie sert de défaut aux nouvelles photos */
 function readGrille(g){ return {aimant:!g || g.aimant !== false, n:g && GRILLES.indexOf(+g.n) >= 0 ? +g.n : 12}; }
 function gridPref(){ try { return readGrille(JSON.parse(localStorage.getItem("esam-picture:grille") || "null")); } catch(e){ return readGrille(null); } }
@@ -438,7 +444,6 @@ function fitCadre(c, sw, sh, r){
 function maxCadre(p){ const f = fmtOf(p.cfg); return f.w ? maxCadreFor(srcW(p), srcH(p), f.w/f.h) : {x:0, y:0, w:1, h:1}; }
 function fixCadre(p){ const f = fmtOf(p.cfg); p.cfg.cadre = f.w ? fitCadre(p.cfg.cadre, srcW(p), srcH(p), f.w/f.h) : {x:0, y:0, w:1, h:1}; }
 function selected(){ return S.photos.find(p => p.id === S.sel) || null; }
-function cfgKey(p){ return `esam-picture:${p.key}`; }
 /* tag : réglage d'origine de la modification (des persist rapprochés d'un même tag font une seule entrée d'historique) ;
    false : restauration par annuler / rétablir (rien n'est empilé) */
 function persist(p, tag){
@@ -446,7 +451,7 @@ function persist(p, tag){
   p.modified = true;
   const s = JSON.stringify(p.cfg, noPriv);
   histRecord(p, s, tag);
-  try { localStorage.setItem(cfgKey(p), s); } catch(e){}
+  saveFiche(p.key, s);
   if(S.dirWritable) scheduleFicheWrite(p);
   renderFilm(); updateHistUI();
 }
@@ -494,8 +499,10 @@ function histStep(redo){
   if(S.fsel && !(c.flous || []).some(z => z.id === S.fsel)) S.fsel = null;
   setOriginal(false); renderPanel(); draw();
 }
-function restoreCfg(p){
-  try { const s = localStorage.getItem(cfgKey(p)); if(s){ applyCfg(p, JSON.parse(s)); p.modified = true; return true; } } catch(e){}
+/* reprise du travail gardé dans le navigateur (IndexedDB, sinon la copie de localStorage) ; asynchrone */
+async function restoreCfg(p){
+  const s = await loadFiche(p.key);
+  try { if(s && applyCfg(p, JSON.parse(s))){ p.modified = true; return true; } } catch(e){}
   return false;
 }
 /* applique une fiche (JSON) à une photo, en tolérant les champs absents */
@@ -504,6 +511,7 @@ function applyCfg(p, d){
   const c = newCfg(p.name);
   if(FORMATS.some(f => f.id === d.format)) c.format = d.format;
   c.rotation = [0,90,180,270].indexOf(d.rotation) >= 0 ? d.rotation : 0;
+  c.inclinaison = readIncl(d.inclinaison);   // fiche d'avant 0.12 : 0
   if(d.cadre && typeof d.cadre === "object") c.cadre = {x:+d.cadre.x || 0, y:+d.cadre.y || 0, w:+d.cadre.w || 0, h:+d.cadre.h || 0};
   if(d.couleur) Object.keys(c.couleur).forEach(k => { c.couleur[k] = clamp(+d.couleur[k] || 0, -100, 100); });
   if(FILTRES.some(f => f.id === d.filtre)) c.filtre = d.filtre;
@@ -557,7 +565,67 @@ function loadImage(file){
     img.src = url;
   });
 }
+/* dimensions affichées (orientation EXIF comprise) lues dans l'en-tête JPEG, sans décoder l'image : marqueur SOF (taille
+   stockée) et étiquette Orientation (0x0112) de l'EXIF ; null si le fichier n'est pas un JPEG lisible ainsi */
+async function jpegDims(file){
+  const b = new Uint8Array(await new Response(file.slice(0, 524288)).arrayBuffer());
+  if(b[0] !== 0xFF || b[1] !== 0xD8) return null;
+  let i = 2, orient = 1;
+  while(i + 9 < b.length){
+    if(b[i] !== 0xFF) return null;
+    const mk = b[i + 1];
+    if(mk === 0xFF){ i++; continue; }
+    if(mk === 0xD8 || (mk >= 0xD0 && mk <= 0xD7) || mk === 0x01){ i += 2; continue; }   // marqueurs sans longueur
+    const len = b[i + 2] << 8 | b[i + 3];
+    if(mk === 0xDA || len < 2) return null;
+    if(mk === 0xE1 && b[i + 4] === 0x45 && b[i + 5] === 0x78 && b[i + 6] === 0x69 && b[i + 7] === 0x66){
+      const t = i + 10, le = b[t] === 0x49, u16 = o => le ? b[o] | b[o + 1] << 8 : b[o] << 8 | b[o + 1];
+      const u32 = o => le ? (b[o] | b[o + 1] << 8 | b[o + 2] << 16 | b[o + 3] << 24) >>> 0 : (b[o] << 24 | b[o + 1] << 16 | b[o + 2] << 8 | b[o + 3]) >>> 0;
+      if(t + 8 <= b.length){
+        const o0 = t + u32(t + 4), n = o0 + 2 <= b.length ? u16(o0) : 0;
+        for(let k = 0; k < n; k++){ const e = o0 + 2 + k*12; if(e + 12 > b.length) break; if(u16(e) === 0x0112){ orient = u16(e + 8); break; } }
+      }
+    }
+    if(mk >= 0xC0 && mk <= 0xCF && mk !== 0xC4 && mk !== 0xC8 && mk !== 0xCC){
+      const h = b[i + 5] << 8 | b[i + 6], w = b[i + 7] << 8 | b[i + 8];
+      if(!w || !h) return null;
+      return orient >= 5 && orient <= 8 ? {w:h, h:w} : {w:w, h:h};
+    }
+    i += 2 + len;
+  }
+  return null;
+}
+/* dimensions affichées par le navigateur (orientation comprise), sans dessiner l'image */
+function imgDims(file){
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(file), img = new Image();
+    img.decoding = "async";
+    img.onload = () => { URL.revokeObjectURL(url); res({w:img.naturalWidth, h:img.naturalHeight}); };
+    img.onerror = () => { URL.revokeObjectURL(url); rej(new Error("format non lisible")); };
+    img.src = url;
+  });
+}
+/* décodage économe : une photo plus grande que l'image de travail (48 Mpx de téléphone) est décodée directement à la
+   taille de travail au lieu d'un bitmap pleine taille. Seule la largeur voulue est imposée (resizeWidth) : le navigateur
+   calcule la hauteur selon sa propre lecture de l'orientation, l'image ne peut donc pas être déformée. null en cas d'échec
+   ou de doute (options ignorées, orientation appliquée autrement : taille ou proportions inattendues) */
+async function decodeSmall(file){
+  if(typeof createImageBitmap !== "function") return null;
+  let d = null;
+  try { d = await jpegDims(file); } catch(e){ d = null; }
+  if(!d) d = await imgDims(file);
+  if(!d || !d.w || !d.h) return null;
+  const k = MAXW/Math.max(d.w, d.h); if(k >= 1) return null;          // déjà assez petite : chemin habituel
+  const rw = Math.max(1, Math.round(d.w*k)), rh = Math.max(1, Math.round(d.h*k));
+  const bm = await createImageBitmap(file, {imageOrientation:"from-image", resizeWidth:rw, resizeQuality:"high"});
+  if(Math.abs(bm.width - rw) > 1 || Math.abs(bm.height - rh) > 2){ if(bm.close) bm.close(); return null; }
+  const c = mkCanvas(rw, rh);                                          // mêmes dimensions que le chemin habituel (arrondi d'un pixel près)
+  c.getContext("2d").drawImage(bm, 0, 0, rw, rh);
+  if(bm.close) bm.close();
+  return c;
+}
 async function decode(file){
+  try { const c = await decodeSmall(file); if(c) return c; } catch(e){}   // repli silencieux sur le chemin habituel
   // createImageBitmap applique l'orientation EXIF (téléphones) ; repli sur <img> (Safari ancien)
   let src, w, h;
   try { src = await createImageBitmap(file, {imageOrientation:"from-image"}); w = src.width; h = src.height; }
@@ -621,7 +689,7 @@ async function addPhotos(items, fiches){
     fixCadre(p);
     const fiche = (fiches && (fiches[p.path] || fiches[p.name])) || pendingFiches[p.path] || pendingFiches[p.name];
     if(fiche){ if(applyCfg(p, fiche)) p.modified = true; }
-    else restoreCfg(p);
+    else await restoreCfg(p);
     histInit(p);
     S.photos.push(p);
     if(!first) first = p;
@@ -651,13 +719,32 @@ const canDir = typeof window.showDirectoryPicker === "function" && window.self =
 const canDirIn = !canDir && "webkitdirectory" in document.createElement("input");
 if(canDir || canDirIn){ $("dirOpen").hidden = false; $("dirHint").hidden = false; }
 if(canDirIn) $("dirHint").textContent = "Avec « Ouvrir un dossier de travail », toutes les photos du dossier sont importées et les fiches .esam.json qui s'y trouvent sont reprises. Sur ce navigateur, le dossier n'est pas modifiable : les exports sont téléchargés.";
-function idb(mode, fn){
-  return new Promise((res, rej) => {
-    const r = indexedDB.open("esam-picture", 1);
-    r.onupgradeneeded = () => { r.result.createObjectStore("kv"); };
-    r.onerror = () => { rej(r.error); };
-    r.onsuccess = () => { const tx = r.result.transaction("kv", mode), q = fn(tx.objectStore("kv")); tx.oncomplete = () => { res(q && q.result); }; tx.onerror = () => { rej(tx.error); }; };
+/* base IndexedDB « esam-picture » : magasin « kv » (le dossier de travail) et, depuis la version 2 de la base, « fiches »
+   (voir « fiches gardées dans le navigateur ») ; ouverte une fois, rejetée sans IndexedDB (navigation privée) */
+const DB_NAME = "esam-picture", DB_VER = 2;
+let DBP = null;
+function dbOpen(){
+  if(DBP) return DBP;
+  DBP = new Promise((res, rej) => {
+    let r;
+    try { r = indexedDB.open(DB_NAME, DB_VER); } catch(e){ rej(e); return; }
+    const tm = setTimeout(() => { rej(new Error("IndexedDB indisponible")); }, 4000);   // ouverture bloquée (autre onglet ancien) : on fait sans
+    r.onupgradeneeded = () => {
+      const db = r.result;   // passage de la version 1 à 2 : le magasin des handles est gardé, celui des fiches ajouté
+      if(!db.objectStoreNames.contains("kv")) db.createObjectStore("kv");
+      if(!db.objectStoreNames.contains("fiches")) db.createObjectStore("fiches");
+    };
+    r.onerror = () => { clearTimeout(tm); rej(r.error); };
+    r.onsuccess = () => { clearTimeout(tm); const db = r.result; db.onversionchange = () => { db.close(); DBP = null; }; res(db); };
   });
+  DBP.catch(() => {});
+  return DBP;
+}
+function idb(store, mode, fn){
+  return dbOpen().then(db => new Promise((res, rej) => {
+    const tx = db.transaction(store, mode), q = fn(tx.objectStore(store));
+    tx.oncomplete = () => { res(q && q.result); }; tx.onerror = () => { rej(tx.error); }; tx.onabort = () => { rej(tx.error); };
+  }));
 }
 const IMG_RE = /\.(jpe?g|png|webp)$/i, VID_RE = /\.(mp4|mov|m4v|webm)$/i;
 function skipDir(name){ return /^\./.test(name) || /^publication$/i.test(name); }
@@ -691,7 +778,7 @@ async function openDir(dir){
   S.dirHandle = dir; S.dirWritable = true;
   if(!(await importFolder(items))){ S.dirHandle = null; S.dirWritable = false; return; }
   $("ttlSub").textContent = dir.name;
-  idb("readwrite", st => st.put(dir, "dossier")).catch(() => {});
+  idb("kv", "readwrite", st => st.put(dir, "dossier")).catch(() => {});
   toast(`Dossier « ${dir.name} » : les fiches sont enregistrées à côté des photos, les exports dans « publication ».`);
 }
 $("dirOpen").onclick = async () => {
@@ -701,7 +788,7 @@ $("dirOpen").onclick = async () => {
   catch(e){ if(e && e.name !== "AbortError") toast(`Ouverture du dossier impossible : ${e.message}`); return; }
   openDir(dir);
 };
-if(canDir) idb("readonly", st => st.get("dossier")).then(dir => {
+if(canDir) idb("kv", "readonly", st => st.get("dossier")).then(dir => {
   if(!dir) return;
   const b = $("dirResume"); b.hidden = false; b.textContent = `Reprendre « ${dir.name} »`;
   b.onclick = async () => {
@@ -752,11 +839,127 @@ $("ficheIn").addEventListener("change", async e => {
   if(pending) toast(`${pending} fiche(s) en attente : chargez les photos correspondantes, elles seront appliquées.`);
 });
 
+/* ---------- fiches gardées dans le navigateur ----------
+   Le travail de chaque photo (sa fiche, clé = nom|taille|date du fichier) est gardé dans IndexedDB (magasin « fiches » :
+   {cfg : la fiche en JSON, t : horodatage de la dernière écriture}), avec une copie miroir synchrone dans localStorage
+   (clé esam-picture:<clé>, lue par les tests et en secours) limitée aux FICHE_MIRROR fiches les plus récentes (index
+   RECENT_KEY = {clé: t}). À l'ouverture (fichesInit) : les fiches de plus de FICHE_DAYS jours sont supprimées, puis les
+   fiches présentes seulement dans localStorage (versions d'avant 0.12) sont reprises dans IndexedDB. Sans IndexedDB
+   (navigation privée de Safari, quota), tout reste dans localStorage, sans limite ni message. */
+const FICHE_MIRROR = 40, FICHE_DAYS = 90, RECENT_KEY = "esam-picture:recentes", FICHE_RE = /^esam-picture:(.+\|\d+\|\d+)$/;
+let FICHES = null;
+function fichesReady(){ return FICHES || (FICHES = fichesInit()); }
+function recentes(){ try { const o = JSON.parse(localStorage.getItem(RECENT_KEY) || "{}"); return o && typeof o === "object" && !Array.isArray(o) ? o : {}; } catch(e){ return {}; } }
+function setRecentes(o){ try { localStorage.setItem(RECENT_KEY, JSON.stringify(o)); } catch(e){} }
+/* garde dans localStorage les n fiches les plus récentes de l'index (les autres sont dans IndexedDB) */
+function mirrorTrim(rec, n){
+  Object.keys(rec).sort((a, b) => rec[b] - rec[a]).slice(n).forEach(k => { try { localStorage.removeItem(`esam-picture:${k}`); } catch(e){} delete rec[k]; });
+}
+function saveFiche(key, s){
+  const t = Date.now(), rec = recentes(), lk = `esam-picture:${key}`;
+  rec[key] = t;
+  try { localStorage.setItem(lk, s); }
+  catch(e){
+    // quota de localStorage atteint : si IndexedDB tient les fiches, on allège la copie miroir et on réessaie
+    if(S.idbOk){ mirrorTrim(rec, FICHE_MIRROR/2); try { localStorage.setItem(lk, s); } catch(e2){} }
+  }
+  setRecentes(rec);
+  fichesReady().then(() => idb("fiches", "readwrite", st => st.put({cfg:s, t:t}, key))).then(() => {
+    S.idbOk = true;
+    const r = recentes(); if(Object.keys(r).length > FICHE_MIRROR){ mirrorTrim(r, FICHE_MIRROR); setRecentes(r); }
+  }).catch(() => {});
+}
+/* la fiche la plus récente des deux copies (IndexedDB, localStorage) ; null si aucune */
+async function loadFiche(key){
+  let ls = null, lt = 0;
+  try { ls = localStorage.getItem(`esam-picture:${key}`); lt = +recentes()[key] || 0; } catch(e){}
+  let d = null;
+  try { await fichesReady(); d = await idb("fiches", "readonly", st => st.get(key)); } catch(e){}
+  if(d && typeof d.cfg === "string" && (!ls || (+d.t || 0) >= lt)) return d.cfg;
+  return ls;
+}
+function delFiche(key){
+  try { localStorage.removeItem(`esam-picture:${key}`); } catch(e){}
+  const rec = recentes(); if(key in rec){ delete rec[key]; setRecentes(rec); }
+  fichesReady().then(() => idb("fiches", "readwrite", st => st.delete(key))).catch(() => {});
+}
+/* à l'ouverture : purge des fiches de plus de FICHE_DAYS jours, reprise des fiches de localStorage dans IndexedDB */
+async function fichesInit(){
+  const now = Date.now(), old = now - FICHE_DAYS*864e5, rec = recentes();
+  Object.keys(rec).forEach(k => { if(!(+rec[k] >= old)){ try { localStorage.removeItem(`esam-picture:${k}`); } catch(e){} delete rec[k]; } });
+  const local = {};
+  try { for(let i = 0; i < localStorage.length; i++){ const m = FICHE_RE.exec(localStorage.key(i) || ""); if(m) local[m[1]] = true; } } catch(e){}
+  try {
+    const db = await dbOpen();
+    // une seule passe sur IndexedDB : les fiches trop anciennes sont supprimées, les autres relevées avec leur horodatage
+    const have = await new Promise((res, rej) => {
+      const tx = db.transaction("fiches", "readwrite"), cur = tx.objectStore("fiches").openCursor(), out = {};
+      cur.onsuccess = () => { const c = cur.result; if(!c) return; const t = +(c.value && c.value.t) || 0; if(t < old) c.delete(); else out[c.key] = t; c.continue(); };
+      tx.oncomplete = () => { res(out); }; tx.onerror = () => { rej(tx.error); }; tx.onabort = () => { rej(tx.error); };
+    });
+    const todo = Object.keys(local).filter(k => !(k in have) || have[k] < (+rec[k] || 0));
+    if(todo.length) await new Promise((res, rej) => {
+      const tx = db.transaction("fiches", "readwrite"), st = tx.objectStore("fiches");
+      todo.forEach(k => { let v = null; try { v = localStorage.getItem(`esam-picture:${k}`); } catch(e){} if(v != null){ const t = +rec[k] || now; st.put({cfg:v, t:t}, k); rec[k] = t; } });
+      tx.oncomplete = res; tx.onerror = () => { rej(tx.error); }; tx.onabort = () => { rej(tx.error); };
+    });
+    S.idbOk = true;
+    Object.keys(local).forEach(k => { if(!(k in rec)) rec[k] = have[k] || now; });   // fiches d'avant 0.12 : horodatées à leur reprise
+    mirrorTrim(rec, FICHE_MIRROR);
+  } catch(e){ S.idbOk = false; }
+  setRecentes(rec);
+}
+
 /* ---------- rendu : image de base (cadre + couleur) ----------
    baseCanvas(p, cw, ch) : la photo tournée, recadrée selon cfg.cadre, mise à l'échelle cw x ch, puis couleurs et filtre.
    Mise en cache par photo (clé = format, cadre, rotation, couleur, filtre, taille). */
 function cropRectOf(q, c){ const sw = srcW(q), sh = srcH(q); return {x:c.x*sw, y:c.y*sh, w:c.w*sw, h:c.h*sh}; }
 function cropRect(p){ return cropRectOf(p, p.cfg.cadre); }
+/* redressement d'horizon (cfg.inclinaison) : la source (tournée de cfg.rotation) est tournée de l'angle autour du centre
+   du cadre puis agrandie du facteur k minimal (au moins 1) pour que le cadre reste entièrement couvert, sans coin vide.
+   T(x) = centre + k R(angle) (x - centre), en pixels de la source. Les fractions de source (flous, zones au lasso, zone
+   de la loupe) désignent la source non inclinée : le rendu leur applique T, elles suivent donc le contenu. Rien (null)
+   si l'inclinaison est nulle : le rendu est alors exactement celui d'avant. */
+function inclOf(q, cadre){
+  const deg = readIncl(q.cfg.inclinaison); if(!deg || !cadre) return null;
+  const a = deg*Math.PI/180, c = Math.cos(a), s = Math.sin(a), sw = srcW(q), sh = srcH(q), cr = cropRectOf(q, cadre);
+  const cx = cr.x + cr.w/2, cy = cr.y + cr.h/2, hw = cr.w/2, hh = cr.h/2;
+  let k = 1;
+  // chaque coin du cadre, ramené dans la source par T^-1 (rotation inverse puis division par k), doit rester dans l'image
+  [[-hw, -hh], [hw, -hh], [-hw, hh], [hw, hh]].forEach(pt => {
+    const u = pt[0]*c + pt[1]*s, v = -pt[0]*s + pt[1]*c;
+    if(u > 1e-9) k = Math.max(k, u/Math.max(1e-6, sw - cx)); else if(u < -1e-9) k = Math.max(k, -u/Math.max(1e-6, cx));
+    if(v > 1e-9) k = Math.max(k, v/Math.max(1e-6, sh - cy)); else if(v < -1e-9) k = Math.max(k, -v/Math.max(1e-6, cy));
+  });
+  return {deg:deg, a:a, c:c, s:s, k:k, cx:cx, cy:cy, sw:sw, sh:sh};
+}
+/* inclinaison de la photo elle-même (pas en bandeaux : chaque bande garde sa photo droite) */
+function inclP(p){ return isBandes(p) ? null : inclOf(p, p.cfg.cadre); }
+/* point en fraction de la source non inclinée -> fraction de la source inclinée (T), et l'inverse */
+function inclPt(t, fx, fy){ const x = fx*t.sw - t.cx, y = fy*t.sh - t.cy; return [(t.cx + t.k*(t.c*x - t.s*y))/t.sw, (t.cy + t.k*(t.s*x + t.c*y))/t.sh]; }
+function inclInv(t, fx, fy){ const x = (fx*t.sw - t.cx)/t.k, y = (fy*t.sh - t.cy)/t.k; return [(t.cx + t.c*x + t.s*y)/t.sw, (t.cy - t.s*x + t.c*y)/t.sh]; }
+/* point du repère des flous (fraction de la source, ou de la sortie en bandeaux) -> repère de sortie W x H, et l'inverse */
+function toOut(p, fx, fy, W, H){
+  const c = cropRef(p), t = inclP(p);
+  if(t){ const q = inclPt(t, fx, fy); fx = q[0]; fy = q[1]; }
+  return [(fx - c.x)/c.w*W, (fy - c.y)/c.h*H];
+}
+function fromOut(p, ox, oy, W, H){
+  const c = cropRef(p), t = inclP(p), fx = c.x + ox/W*c.w, fy = c.y + oy/H*c.h;
+  return t ? inclInv(t, fx, fy) : [fx, fy];
+}
+/* déplacement (dx, dy) dans le repère de sortie -> déplacement en fraction du repère des flous */
+function deltaFromOut(p, dx, dy, W, H){
+  const c = cropRef(p), t = inclP(p);
+  if(!t) return [dx/W*c.w, dy/H*c.h];
+  const a = fromOut(p, 0, 0, W, H), b = fromOut(p, dx, dy, W, H); return [b[0] - a[0], b[1] - a[1]];
+}
+/* dessine la source tournée puis inclinée (T) dans ctx, repère = source tournée (srcW x srcH) à l'échelle k */
+function drawInclined(ctx, q, k, t){
+  if(!t){ drawRotated(ctx, q, k); return; }
+  ctx.save(); ctx.translate(t.cx*k, t.cy*k); ctx.rotate(t.a); ctx.scale(t.k, t.k); ctx.translate(-t.cx*k, -t.cy*k);
+  drawRotated(ctx, q, k); ctx.restore();
+}
 /* dessine la source tournée (cfg.rotation) dans ctx, repère = image tournée (srcW x srcH), à l'échelle k */
 function drawRotated(ctx, p, k){
   const r = p.cfg.rotation || 0;
@@ -768,6 +971,7 @@ function drawRotated(ctx, p, k){
   ctx.restore();
 }
 let RAW = false;   // rendu « Original » en cours : couleurs et filtre neutres (voir origCanvas)
+let QUICK = false; // rendu allégé de l'aperçu en cours (glissement d'un curseur) : la loupe se contente de la résolution de l'aperçu
 function colorParams(cfg){
   if(RAW) return {lum:0, contraste:0, sat:0, temp:0, vignette:0, teinte:null, teinteF:0, sel:null};
   const f = FILTRES.find(x => x.id === cfg.filtre) || FILTRES[0], u = cfg.couleur, q = f.p, sel = cfg.selectif && cfg.selectif.actif ? cfg.selectif : null;
@@ -790,19 +994,19 @@ function keepWeight(r, g, b, bands, sthr){
 }
 /* masque des zones au lasso (fraction de la source, converties par le cadre) dans un canvas w x h : blanc où les couleurs
    peuvent rester ; sans zone « garder », tout est permis sauf les zones « exclure » ; bords adoucis par réductions */
-function zonesMask(zones, cadre, w, h){
+function zonesMask(zones, cadre, w, h, t){
   if(!zones || !zones.length) return null;
   const c = mkCanvas(w, h), ctx = c.getContext("2d"), keep = zones.filter(z => z.sens !== "exclure");
   ctx.fillStyle = keep.length ? "#000" : "#fff"; ctx.fillRect(0, 0, w, h);
-  const poly = z => { ctx.beginPath(); z.pts.forEach((pt, i) => { const x = (pt[0] - cadre.x)/cadre.w*w, y = (pt[1] - cadre.y)/cadre.h*h; if(i) ctx.lineTo(x, y); else ctx.moveTo(x, y); }); ctx.closePath(); ctx.fill(); };
+  const poly = z => { ctx.beginPath(); z.pts.forEach((pt, i) => { const q = t ? inclPt(t, pt[0], pt[1]) : pt, x = (q[0] - cadre.x)/cadre.w*w, y = (q[1] - cadre.y)/cadre.h*h; if(i) ctx.lineTo(x, y); else ctx.moveTo(x, y); }); ctx.closePath(); ctx.fill(); };
   ctx.fillStyle = "#fff"; keep.forEach(poly);
   ctx.fillStyle = "#000"; zones.filter(z => z.sens === "exclure").forEach(poly);
   return downUp(c, clamp(Math.round(Math.min(w, h)/220), 2, 8), true).getContext("2d").getImageData(0, 0, w, h).data;
 }
 /* couleurs par pixel : tables par canal (luminosité, contraste, température), saturation autour de la luminance,
    teinte dans les ombres (filtre ESAM), couleurs conservées (le reste en gris, mesuré sur le pixel d'origine), vignettage radial.
-   Même calcul pour l'aperçu et l'export. */
-function applyColor(canvas, c, cadre){
+   Même calcul pour l'aperçu et l'export. cadre : la partie de la source dessinée (zones au lasso) ; t : son inclinaison. */
+function applyColor(canvas, c, cadre, t){
   if(isNeutral(c)) return;
   const ctx = canvas.getContext("2d"), W = canvas.width, H = canvas.height, id = ctx.getImageData(0, 0, W, H), d = id.data;
   const lut = [new Uint8ClampedArray(256), new Uint8ClampedArray(256), new Uint8ClampedArray(256)];
@@ -815,7 +1019,7 @@ function applyColor(canvas, c, cadre){
   let tr = 0, tg = 0, tb = 0, tf = c.teinte ? c.teinteF : 0;
   if(tf){ tr = parseInt(c.teinte.slice(1, 3), 16); tg = parseInt(c.teinte.slice(3, 5), 16); tb = parseInt(c.teinte.slice(5, 7), 16); }
   const sel = c.sel, bands = sel ? selBands(sel) : [], sthr = sel ? sel.seuil/100 : 0, boost = sel ? 1 + sel.renfort/100 : 1;
-  const mask = sel ? zonesMask(sel.zones, cadre || {x:0, y:0, w:1, h:1}, W, H) : null;
+  const mask = sel ? zonesMask(sel.zones, cadre || {x:0, y:0, w:1, h:1}, W, H, t) : null;
   const cx = W/2, cy = H/2, rmax = Math.sqrt(cx*cx + cy*cy);
   for(let y = 0; y < H; y++){
     const dy = (y - cy)/rmax;
@@ -832,19 +1036,19 @@ function applyColor(canvas, c, cadre){
   }
   ctx.putImageData(id, 0, 0);
 }
-/* photo q recadrée selon un cadre (fraction de sa source tournée), mise à l'échelle w x h, avec ses couleurs */
-function cropCanvas(q, cadre, w, h){
+/* photo q recadrée selon un cadre (fraction de sa source tournée, inclinée par t s'il est donné), mise à l'échelle w x h, avec ses couleurs */
+function cropCanvas(q, cadre, w, h, t){
   const cr = cropRectOf(q, cadre), c = mkCanvas(w, h), ctx = c.getContext("2d"), k = w/cr.w;
-  ctx.save(); ctx.translate(-cr.x*k, -cr.y*k); drawRotated(ctx, q, k); ctx.restore();
-  applyColor(c, colorParams(q.cfg), cadre);
+  ctx.save(); ctx.translate(-cr.x*k, -cr.y*k); drawInclined(ctx, q, k, t); ctx.restore();
+  applyColor(c, colorParams(q.cfg), cadre, t);
   return c;
 }
-function baseKey(p, cw, ch){ const c = p.cfg; return JSON.stringify([c.format, c.cadre, c.rotation, colKey(c), cw, ch]); }
-/* la photo elle-même (cadre et couleurs de sa fiche), cache p.cache.own */
+function baseKey(p, cw, ch){ const c = p.cfg; return JSON.stringify([c.format, c.cadre, c.rotation, readIncl(c.inclinaison), colKey(c), cw, ch]); }
+/* la photo elle-même (cadre, inclinaison et couleurs de sa fiche), cache p.cache.own */
 function ownCanvas(p, cw, ch){
   const key = baseKey(p, cw, ch);
   if(p.cache.own && p.cache.ownKey === key) return p.cache.own;
-  const c = cropCanvas(p, p.cfg.cadre, cw, ch);
+  const c = cropCanvas(p, p.cfg.cadre, cw, ch, inclOf(p, p.cfg.cadre));
   p.cache.own = c; p.cache.ownKey = key;
   return c;
 }
@@ -854,7 +1058,7 @@ function baseCanvas(p, cw, ch){
   const key = baseKey(p, cw, ch) + montKey(p);
   if(p.cache.base && p.cache.baseKey === key) return p.cache.base;
   const c = montageCanvas(p, cw, ch) || ownCanvas(p, cw, ch);
-  p.cache.base = c; p.cache.baseKey = key; p.cache.blur = null;
+  p.cache.base = c; p.cache.baseKey = key; p.cache.blur = null; p.cache.zones = null;   // les flous en cache par zone reposent sur cette base
   return c;
 }
 /* avant / après (bouton « Original ») : la base sans couleurs ni filtre, cadre et rotation gardés (montage compris),
@@ -1040,10 +1244,14 @@ function cropRef(p){ return isBandes(p) ? {x:0, y:0, w:1, h:1} : p.cfg.cadre; }
 /* ---------- rendu : zones de flou ----------
    Zones en fraction de l'image source (centre x, y ; taille w, h ; angle en degrés) ; converties dans le repère de sortie.
    Trois rendus : doux (flou gaussien approché par réductions successives, bords fondus), pixelisé (mosaïque),
-   dynamique (filé directionnel). Sans ctx.filter, pour marcher sur tous les navigateurs. */
+   dynamique (filé directionnel). Sans ctx.filter, pour marcher sur tous les navigateurs.
+   Avec une inclinaison, la zone suit le contenu : centre transformé par T, taille multipliée par k, angle augmenté de
+   l'inclinaison. rot : orientation dans le repère de sortie, en radians. */
 function zoneOut(z, p, cw, ch){
-  const c = cropRef(p);
-  return {x:(z.x - c.x)/c.w*cw, y:(z.y - c.y)/c.h*ch, w:z.w/c.w*cw, h:z.h/c.h*ch};
+  const c = cropRef(p), t = inclP(p);
+  if(!t) return {x:(z.x - c.x)/c.w*cw, y:(z.y - c.y)/c.h*ch, w:z.w/c.w*cw, h:z.h/c.h*ch, rot:(z.angle || 0)*Math.PI/180};
+  const o = toOut(p, z.x, z.y, cw, ch);
+  return {x:o[0], y:o[1], w:z.w/c.w*cw*t.k, h:z.h/c.h*ch*t.k, rot:((z.angle || 0) + t.deg)*Math.PI/180};
 }
 function downUp(src, factor, smooth){
   // réduit de « factor » en plusieurs passes (meilleur lissage) puis remonte
@@ -1058,45 +1266,68 @@ function downUp(src, factor, smooth){
   ox.drawImage(cur, 0, 0, w, h, 0, 0, out.width, out.height);
   return out;
 }
+/* Cache par zone (p.cache.zones, vidé quand la base change) : pour chaque zone, son rendu flouté et masqué (fx) et son
+   masque (mk, qui ne dépend que de la forme, de la taille et de l'orientation). La clé d'une zone reprend ses réglages,
+   la taille du rendu et les clés des zones précédentes dont la région touche la sienne (elles ont modifié ce qu'elle
+   floute) : quand une zone bouge, seules elle et les zones posées après elle qui la recouvrent sont recalculées, les
+   autres sont recomposées telles quelles. Même rendu au pixel près qu'un calcul complet. */
+function blurZone(out, z, r, cw, bw){
+  const u = cw/1080, rot = r.rot, bx = Math.round(r.x - bw/2), by = Math.round(r.y - bw/2);
+  const reg = mkCanvas(bw, bw), rx = reg.getContext("2d");
+  rx.drawImage(out, bx, by, bw, bw, 0, 0, bw, bw);
+  let fx;
+  const strength = [0, 6, 12, 22][z.force]*u*Math.max(1, Math.min(r.w, r.h)/(90*u));
+  if(z.mode === "pixel"){
+    const px = Math.max(4, Math.round([0, 10, 18, 28][z.force]*u*Math.max(1, Math.min(r.w, r.h)/(160*u))));
+    const nw = Math.max(1, Math.round(bw/px)), small = mkCanvas(nw, nw), sx = small.getContext("2d");
+    sx.imageSmoothingEnabled = true; sx.drawImage(reg, 0, 0, bw, bw, 0, 0, nw, nw);
+    fx = mkCanvas(bw, bw); const fc = fx.getContext("2d"); fc.imageSmoothingEnabled = false; fc.drawImage(small, 0, 0, nw, nw, 0, 0, bw, bw);
+  } else if(z.mode === "dynamique"){
+    const soft = downUp(reg, Math.max(1.5, strength/5), true), n = 14, len = Math.max(10*u, strength*2.2);
+    fx = mkCanvas(bw, bw); const fc = fx.getContext("2d"); fc.globalAlpha = 1/n;
+    for(let i = 0; i < n; i++){ const t = (i/(n - 1) - 0.5)*len; fc.drawImage(soft, Math.cos(rot)*t, Math.sin(rot)*t); }
+    fc.globalAlpha = 1;
+  } else {
+    fx = downUp(reg, Math.max(1.5, strength/2), true);
+    fx = downUp(fx, Math.max(1.5, strength/3), true);
+  }
+  return fx;
+}
+/* masque : forme pleine (ellipse ou rectangle arrondi) un peu réduite, puis adoucie par le même flou de réduction,
+   ce qui donne des bords fondus sur une largeur proportionnelle à la zone (« discret ») */
+function blurMask(z, r, bw){
+  const feather = z.mode === "pixel" ? 0.08 : 0.22, m0 = mkCanvas(bw, bw), mx = m0.getContext("2d");
+  mx.translate(bw/2, bw/2); mx.rotate(r.rot); mx.fillStyle = "#000"; mx.beginPath();
+  const w0 = r.w/2*(1 - feather*0.5), h0 = r.h/2*(1 - feather*0.5);
+  if(z.forme === "rect") rRound(mx, -w0, -h0, w0*2, h0*2, Math.min(w0, h0)*0.3); else mx.ellipse(0, 0, w0, h0, 0, 0, Math.PI*2);
+  mx.fill();
+  return downUp(m0, Math.max(1.5, feather*Math.min(r.w, r.h)/5), true);
+}
+function hashKey(s){ return `${hash(s).toString(36)}.${hash("\u0001" + s).toString(36)}`; }
 function applyBlurs(base, p, cw, ch){
   const zones = p.cfg.flous || []; if(!zones.length) return base;
   const out = mkCanvas(cw, ch), ctx = out.getContext("2d"); ctx.drawImage(base, 0, 0);
-  const u = cw/1080;
+  const u = cw/1080, prev = p.cache.zones || {}, next = {}, done = [];
   zones.forEach(z => {
-    const r = zoneOut(z, p, cw, ch), rot = (z.angle || 0)*Math.PI/180;
+    const r = zoneOut(z, p, cw, ch);
     const diag = Math.sqrt(r.w*r.w + r.h*r.h), pad = 24*u*z.force;
     // région de travail : carré englobant la zone tournée, avec marge
     const bw = Math.ceil(diag + 2*pad), bx = Math.round(r.x - bw/2), by = Math.round(r.y - bw/2);
     if(bw < 2) return;
-    const reg = mkCanvas(bw, bw), rx = reg.getContext("2d");
-    rx.drawImage(out, bx, by, bw, bw, 0, 0, bw, bw);
-    let fx;
-    const strength = [0, 6, 12, 22][z.force]*u*Math.max(1, Math.min(r.w, r.h)/(90*u));
-    if(z.mode === "pixel"){
-      const px = Math.max(4, Math.round([0, 10, 18, 28][z.force]*u*Math.max(1, Math.min(r.w, r.h)/(160*u))));
-      const nw = Math.max(1, Math.round(bw/px)), small = mkCanvas(nw, nw), sx = small.getContext("2d");
-      sx.imageSmoothingEnabled = true; sx.drawImage(reg, 0, 0, bw, bw, 0, 0, nw, nw);
-      fx = mkCanvas(bw, bw); const fc = fx.getContext("2d"); fc.imageSmoothingEnabled = false; fc.drawImage(small, 0, 0, nw, nw, 0, 0, bw, bw);
-    } else if(z.mode === "dynamique"){
-      const soft = downUp(reg, Math.max(1.5, strength/5), true), n = 14, len = Math.max(10*u, strength*2.2);
-      fx = mkCanvas(bw, bw); const fc = fx.getContext("2d"); fc.globalAlpha = 1/n;
-      for(let i = 0; i < n; i++){ const t = (i/(n - 1) - 0.5)*len; fc.drawImage(soft, Math.cos(rot)*t, Math.sin(rot)*t); }
-      fc.globalAlpha = 1;
-    } else {
-      fx = downUp(reg, Math.max(1.5, strength/2), true);
-      fx = downUp(fx, Math.max(1.5, strength/3), true);
+    const deps = done.filter(d => d.bx < bx + bw && bx < d.bx + d.bw && d.by < by + bw && by < d.by + d.bw).map(d => d.h);
+    const key = JSON.stringify([z.id, z.forme, z.mode, z.force, z.x, z.y, z.w, z.h, z.angle || 0, r.x, r.y, r.w, r.h, r.rot, cw, ch, deps]);
+    const mkey = JSON.stringify([z.forme, z.mode, r.w, r.h, r.rot, bw]);
+    let e = prev[z.id];
+    if(!e || e.key !== key){
+      const mk = e && e.mkey === mkey ? e.mk : blurMask(z, r, bw), fx = blurZone(out, z, r, cw, bw);
+      const fc = fx.getContext("2d"); fc.globalCompositeOperation = "destination-in"; fc.drawImage(mk, 0, 0); fc.globalCompositeOperation = "source-over";
+      e = {key:key, mkey:mkey, mk:mk, fx:fx};
     }
-    // masque : forme pleine (ellipse ou rectangle arrondi) un peu réduite, puis adoucie par le même flou de réduction,
-    // ce qui donne des bords fondus sur une largeur proportionnelle à la zone (« discret »)
-    const feather = z.mode === "pixel" ? 0.08 : 0.22, m0 = mkCanvas(bw, bw), mx = m0.getContext("2d");
-    mx.translate(bw/2, bw/2); mx.rotate(rot); mx.fillStyle = "#000"; mx.beginPath();
-    const w0 = r.w/2*(1 - feather*0.5), h0 = r.h/2*(1 - feather*0.5);
-    if(z.forme === "rect") rRound(mx, -w0, -h0, w0*2, h0*2, Math.min(w0, h0)*0.3); else mx.ellipse(0, 0, w0, h0, 0, 0, Math.PI*2);
-    mx.fill();
-    const m = downUp(m0, Math.max(1.5, feather*Math.min(r.w, r.h)/5), true);
-    const fc2 = fx.getContext("2d"); fc2.globalCompositeOperation = "destination-in"; fc2.drawImage(m, 0, 0); fc2.globalCompositeOperation = "source-over";
-    ctx.drawImage(fx, bx, by);
+    next[z.id] = e;
+    done.push({bx:bx, by:by, bw:bw, h:hashKey(key)});
+    ctx.drawImage(e.fx, bx, by);
   });
+  p.cache.zones = next;
   return out;
 }
 function blurredCanvas(p, cw, ch){
@@ -1240,14 +1471,14 @@ function zoneCadre(l, dims, u){ const z = l.zone, h = z.w*zoneRatio(dims, l, u);
 /* boîte de la zone grossie dans le repère de sortie o (photo elle-même) */
 function zoneBox(p, l, o){
   const u = o.W/1080, c = cropRef(p), b = loupeSize(u, l), z = l.zone;   // la zone est en fraction de la source (de la sortie en bandeaux, comme les flous)
-  const ow = z.w/c.w*o.W;
-  return {cx:(z.x - c.x)/c.w*o.W, cy:(z.y - c.y)/c.h*o.H, hw:ow/2, hh:ow*b.h/b.w/2, rot:0};
+  const ow = z.w/c.w*o.W, pt = toOut(p, z.x, z.y, o.W, o.H);   // avec une inclinaison, le centre suit le contenu, l'anneau reste droit
+  return {cx:pt[0], cy:pt[1], hw:ow/2, hh:ow*b.h/b.w/2, rot:0};
 }
-/* contenu de la loupe (w x h pixels), en cache */
-function loupeCanvas(p, l, q, cadre, w, h, cw, ch){
+/* contenu de la loupe (w x h pixels), en cache ; t : inclinaison de la photo elle-même (cadre = zone dans la source inclinée) */
+function loupeCanvas(p, l, q, cadre, w, h, cw, ch, t){
   const fromBase = l.src ? false : zoomFromBase(p, l);
-  return cached(p, JSON.stringify(["loupe", l.id, q.id, cadre, w, h, fromBase, q.cfg.rotation, colKey(q.cfg), fromBase ? [cw, ch] : 0]), () => {
-    if(!fromBase) return cropCanvas(q, cadre, w, h);
+  return cached(p, JSON.stringify(["loupe", l.id, q.id, cadre, w, h, fromBase, q.cfg.rotation, colKey(q.cfg), fromBase ? [cw, ch] : 0, t ? [t.deg, t.k, t.cx, t.cy] : 0]), () => {
+    if(!fromBase) return cropCanvas(q, cadre, w, h, t);
     const base = blurredCanvas(p, cw, ch), c = mkCanvas(w, h), x = c.getContext("2d");
     const cr = isBandes(p) ? cadre : (() => { const k = cropRef(p); return {x:(cadre.x - k.x)/k.w, y:(cadre.y - k.y)/k.h, w:cadre.w/k.w, h:cadre.h/k.h}; })();
     x.imageSmoothingQuality = "high"; x.drawImage(base, cr.x*base.width, cr.y*base.height, cr.w*base.width, cr.h*base.height, 0, 0, w, h); return c;
@@ -1279,8 +1510,12 @@ function drawZoom(ctx, u, l, p, cw, ch){
   ctx.clip();
   if(q){
     const dims = zoomDims(p, l, q); fitZone(p, l, dims, u);
-    const pw = clamp(Math.round(b.w*l.s/16)*16, 64, 2048), ph = Math.max(16, Math.round(pw*b.h/b.w));   // résolution de l'export, par pas de 16
-    ctx.imageSmoothingQuality = "high"; ctx.drawImage(loupeCanvas(p, l, q, zoneCadre(l, dims, u), pw, ph, cw, ch), -b.w/2, -b.h/2, b.w, b.h);
+    // résolution de l'export, par pas de 16 (pendant le glissement d'un curseur, celle de l'aperçu allégé)
+    const kq = QUICK ? Math.min(1, cw/(1080*u)) : 1, pw = clamp(Math.round(b.w*l.s*kq/16)*16, 64, 2048), ph = Math.max(16, Math.round(pw*b.h/b.w));
+    // photo elle-même inclinée : la zone (droite) est prise dans la source inclinée, autour du point de contenu transformé
+    const t = !l.src && q === p ? inclP(p) : null, zc = zoneCadre(l, dims, u);
+    if(t){ const m = inclPt(t, l.zone.x, l.zone.y); zc.x = m[0] - zc.w/2; zc.y = m[1] - zc.h/2; }
+    ctx.imageSmoothingQuality = "high"; ctx.drawImage(loupeCanvas(p, l, q, zc, pw, ph, cw, ch, t), -b.w/2, -b.h/2, b.w, b.h);
   } else placeholder(ctx, {x:-b.w/2, y:-b.h/2, w:b.w, h:b.h}, l.src, u*0.75);
   ctx.restore();
   if(lw){ ctx.save(); loupePath(ctx, l, b.w, b.h, u); ctx.lineWidth = lw; ctx.strokeStyle = col; ctx.stroke(); ctx.restore(); }
@@ -1430,23 +1665,30 @@ function drawOutView(p){
   }
   const vue = S.tab === "montage" && montMode(p) === "fusion" && S.mview !== "deux" ? S.mview : null;   // vue d'aperçu, jamais dans la fiche ni l'export
   if(vue) p.cfg.montage._vue = vue;
-  try { renderAll(ctx, p, o.W, o.H, cv.width, cv.height); } finally { delete p.cfg.montage._vue; }
+  // glissement d'un curseur (S.quick) : base, couleurs et flous à demi-résolution au plus, dans un cache à part
+  let cw = cv.width, ch = cv.height, keep = null;
+  if(S.quick){
+    const f = Math.min(0.5, Math.sqrt(QUICK_PIX/(cw*ch)));
+    cw = Math.max(1, Math.round(cw*f)); ch = Math.max(1, Math.round(ch*f));
+    keep = p.cache; p.cache = keep.quick || (keep.quick = {}); QUICK = true;
+  }
+  try { renderAll(ctx, p, o.W, o.H, cw, ch); } finally { delete p.cfg.montage._vue; if(keep){ p.cache = keep; QUICK = false; } }
   if(S.tab === "flous"){
     (p.cfg.flous || []).forEach((z, i) => {
       const r = zoneOut(z, p, o.W, o.H), sel = z.id === S.fsel;
-      ctx.save(); ctx.translate(r.x, r.y); ctx.rotate((z.angle || 0)*Math.PI/180);
+      ctx.save(); ctx.translate(r.x, r.y); ctx.rotate(r.rot);
       ctx.lineWidth = hx(sel ? 2 : 1.2); ctx.strokeStyle = sel ? "#F9DD10" : "rgba(255,255,255,.8)"; ctx.setLineDash(sel ? [] : [hx(5), hx(4)]);
       ctx.shadowColor = "rgba(0,0,0,.6)"; ctx.shadowBlur = hx(3);
       ctx.beginPath(); if(z.forme === "rect") rRound(ctx, -r.w/2, -r.h/2, r.w, r.h, Math.min(r.w, r.h)*0.15); else ctx.ellipse(0, 0, r.w/2, r.h/2, 0, 0, Math.PI*2); ctx.stroke();
       ctx.fillStyle = "#fff"; ctx.font = `700 ${hx(12*Math.min(2, window.devicePixelRatio || 1))}px ${MONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(String(i + 1), 0, 0);
       ctx.restore();
-      if(sel) drawBox(ctx, {cx:r.x, cy:r.y, hw:r.w/2, hh:r.h/2, rot:(z.angle || 0)*Math.PI/180}, true);
+      if(sel) drawBox(ctx, {cx:r.x, cy:r.y, hw:r.w/2, hh:r.h/2, rot:r.rot}, true);
     });
   } else if(S.tab === "couleur" && lassoOn(p)){
-    const c = p.cfg.cadre, sel = p.cfg.selectif, toOut = pt => [(pt[0] - c.x)/c.w*o.W, (pt[1] - c.y)/c.h*o.H];
+    const sel = p.cfg.selectif, ptOut = pt => toOut(p, pt[0], pt[1], o.W, o.H);
     const trace = (pts, close) => { ctx.beginPath(); pts.forEach((pt, i) => { if(i) ctx.lineTo(pt[0], pt[1]); else ctx.moveTo(pt[0], pt[1]); }); if(close) ctx.closePath(); ctx.stroke(); };
     sel.zones.forEach((z, i) => {
-      const pts = z.pts.map(toOut), on = z.id === S.zsel, ex = z.sens === "exclure";
+      const pts = z.pts.map(ptOut), on = z.id === S.zsel, ex = z.sens === "exclure";
       ctx.save(); ctx.lineWidth = hx(on ? 2.5 : 1.4); ctx.strokeStyle = on ? "#F9DD10" : ex ? "rgba(255,120,120,.9)" : "rgba(255,255,255,.85)"; ctx.setLineDash(on ? [] : [hx(5), hx(4)]);
       ctx.shadowColor = "rgba(0,0,0,.6)"; ctx.shadowBlur = hx(3); trace(pts, true);
       if(ex){ ctx.fillStyle = "rgba(0,0,0,.25)"; ctx.fill(); }
@@ -1499,8 +1741,8 @@ function inPoly(pts, x, y){ let r = false; for(let i = 0, j = pts.length - 1; i 
 function endLasso(p, pts){
   S.lasso = false;
   if(pts.length < 3){ toast("Tracez un contour autour de la zone, sans lever le doigt."); return; }
-  const o = outSize(p), c = p.cfg.cadre, step = Math.max(1, Math.ceil(pts.length/160));
-  const z = {id:uid(), sens:S.lassoSens === "exclure" ? "exclure" : "garder", pts:pts.filter((q, i) => i % step === 0).map(q => [clamp(c.x + q.x/o.W*c.w, -0.5, 1.5), clamp(c.y + q.y/o.H*c.h, -0.5, 1.5)])};
+  const o = outSize(p), step = Math.max(1, Math.ceil(pts.length/160));
+  const z = {id:uid(), sens:S.lassoSens === "exclure" ? "exclure" : "garder", pts:pts.filter((q, i) => i % step === 0).map(q => { const f = fromOut(p, q.x, q.y, o.W, o.H); return [clamp(f[0], -0.5, 1.5), clamp(f[1], -0.5, 1.5)]; })};
   p.cfg.selectif.zones.push(z); S.zsel = z.id;
 }
 /* petite étiquette sur l'aperçu (taille à l'écran) ; o : l'étiquette reste dans l'image */
@@ -1544,12 +1786,15 @@ function drawCropView(p){
   const sw = srcW(p), sh = srcH(p); layoutCanvas(sw, sh);
   const ctx = cx2; ctx.setTransform(V.k, 0, 0, V.k, 0, 0); V.space = "src";
   ctx.clearRect(0, 0, sw, sh);
-  drawRotated(ctx, p, 1);
+  // avec une inclinaison, la photo est montrée tournée (et agrandie du même facteur) autour du centre du cadre, qui reste
+  // droit : l'intérieur du cadre est exactement l'image exportée ; une grille plus fine aide à caler l'horizon
+  const t = inclP(p), n = t ? 6 : 3;
+  drawInclined(ctx, p, 1, t);
   const c = cropRect(p);
   ctx.fillStyle = "rgba(0,0,0,.55)";
   ctx.beginPath(); ctx.rect(0, 0, sw, sh); ctx.rect(c.x, c.y + c.h, c.w, -c.h); ctx.fill("evenodd");   // assombrit hors cadre
   ctx.save(); ctx.lineWidth = hx(1); ctx.strokeStyle = "rgba(255,255,255,.45)";
-  for(let i = 1; i < 3; i++){ ctx.beginPath(); ctx.moveTo(c.x + c.w*i/3, c.y); ctx.lineTo(c.x + c.w*i/3, c.y + c.h); ctx.moveTo(c.x, c.y + c.h*i/3); ctx.lineTo(c.x + c.w, c.y + c.h*i/3); ctx.stroke(); }
+  for(let i = 1; i < n; i++){ ctx.beginPath(); ctx.moveTo(c.x + c.w*i/n, c.y); ctx.lineTo(c.x + c.w*i/n, c.y + c.h); ctx.moveTo(c.x, c.y + c.h*i/n); ctx.lineTo(c.x + c.w, c.y + c.h*i/n); ctx.stroke(); }
   ctx.restore();
   ctx.save(); handleStyle(ctx); ctx.setLineDash([]); ctx.lineWidth = hx(2.5); ctx.strokeStyle = "#F9DD10"; ctx.strokeRect(c.x, c.y, c.w, c.h); ctx.restore();
   const r = handleR();
@@ -1568,7 +1813,7 @@ function ptPos(e){ const r = cv.getBoundingClientRect(); return {x:(e.clientX - 
 function curObj(p){
   if(S.tab === "cadre"){ if(!fmtOf(p.cfg).w || isBandes(p)) return null; const c = cropRect(p); return {kind:"cadre", ref:p.cfg.cadre, cx:c.x + c.w/2, cy:c.y + c.h/2, hw:c.w/2, hh:c.h/2, rot:0}; }
   const o = outSize(p);
-  if(S.tab === "flous"){ const z = (p.cfg.flous || []).find(x => x.id === S.fsel); if(!z) return null; const r = zoneOut(z, p, o.W, o.H); return {kind:"flou", ref:z, cx:r.x, cy:r.y, hw:r.w/2, hh:r.h/2, rot:(z.angle || 0)*Math.PI/180}; }
+  if(S.tab === "flous"){ const z = (p.cfg.flous || []).find(x => x.id === S.fsel); if(!z) return null; const r = zoneOut(z, p, o.W, o.H); return {kind:"flou", ref:z, cx:r.x, cy:r.y, hw:r.w/2, hh:r.h/2, rot:r.rot}; }
   if(S.tab === "calques"){
     const l = p.cfg.calques.find(x => x.id === S.csel); if(!l || !l._box) return null;
     if(l.type === "zoom" && S.lsub === "zone" && !l.src) return Object.assign(zoneBox(p, l, o), {kind:"lzone", ref:l, norot:true});
@@ -1602,7 +1847,7 @@ function pick(p, q){
   const o = outSize(p);
   if(S.tab === "flous"){
     const zs = p.cfg.flous || [];
-    for(let i = zs.length - 1; i >= 0; i--){ const r = zoneOut(zs[i], p, o.W, o.H); if(inBox({cx:r.x, cy:r.y, hw:r.w/2, hh:r.h/2, rot:(zs[i].angle || 0)*Math.PI/180}, q, hx(6))) return zs[i].id; }
+    for(let i = zs.length - 1; i >= 0; i--){ const r = zoneOut(zs[i], p, o.W, o.H); if(inBox({cx:r.x, cy:r.y, hw:r.w/2, hh:r.h/2, rot:r.rot}, q, hx(6))) return zs[i].id; }
   } else if(S.tab === "calques"){
     const ls = p.cfg.calques;
     for(let i = ls.length - 1; i >= 0; i--){ const l = ls[i]; if(l._box && inBox({cx:l.x*o.W, cy:l.y*o.H, hw:l._box.w/2, hh:l._box.h/2, rot:(l.rot || 0)*Math.PI/180}, q, hx(8))) return l.id; }
@@ -1622,8 +1867,8 @@ function applyGesture(p, b, o0, dx, dy, f, da){
     c.w = o0.w*f; c.h = o0.h*f; c.x = o0.x + dx/sw - (c.w - o0.w)/2; c.y = o0.y + dy/sh - (c.h - o0.h)/2;
     fixCadre(p);
   } else if(b.kind === "flou"){
-    const z = b.ref, cd = cropRef(p);
-    z.x = clamp(o0.x + dx/o.W*cd.w, 0, 1); z.y = clamp(o0.y + dy/o.H*cd.h, 0, 1);
+    const z = b.ref, dd = deltaFromOut(p, dx, dy, o.W, o.H);   // le doigt bouge dans la sortie (inclinée), la zone en fraction de la source
+    z.x = clamp(o0.x + dd[0], 0, 1); z.y = clamp(o0.y + dd[1], 0, 1);
     z.w = clamp(o0.w*f, 0.02, 1.5); z.h = clamp(o0.h*f, 0.02, 1.5); z.angle = Math.round(o0.angle + da*180/Math.PI);
   } else if(b.kind === "bande"){
     // la photo suit le doigt dans sa bande (le cadre va dans l'autre sens) ; pincer zoome autour du centre du cadre
@@ -1636,8 +1881,8 @@ function applyGesture(p, b, o0, dx, dy, f, da){
     l.x = clamp(o0.x + dx/o.W, -0.5, 1.5); l.y = clamp(o0.y + dy/o.H, -0.5, 1.5); l.s = clamp(o0.s*f, 0.1, 8); l.rot = clamp(Math.round((o0.rot + da*180/Math.PI)*10)/10, -180, 180);
   } else if(b.kind === "lzone"){
     // l'anneau de la zone grossie se déplace sur la photo, pincer change la taille de la zone (donc le grossissement)
-    const l = b.ref, z = l.zone, z0 = o0.zone, cd = cropRef(p);
-    z.x = z0.x + dx/o.W*cd.w; z.y = z0.y + dy/o.H*cd.h; z.w = z0.w*f;
+    const l = b.ref, z = l.zone, z0 = o0.zone, dd = deltaFromOut(p, dx, dy, o.W, o.H);
+    z.x = z0.x + dd[0]; z.y = z0.y + dd[1]; z.w = z0.w*f;
     fitZone(p, l, zoomDims(p, l, p), o.W/1080);
   } else if(b.kind === "lcontenu"){
     // la photo incrustée suit le doigt dans la loupe (la zone va dans l'autre sens) ; pincer zoome dedans
@@ -1683,7 +1928,7 @@ cv.addEventListener("pointerdown", e => {
   if(G.ptrs.size > 1) return;
   if(lassoOn(p)){
     if(S.lasso){ G.act = {kind:"lasso", pts:[q]}; return; }
-    const o = outSize(p), c = p.cfg.cadre, fx = c.x + q.x/o.W*c.w, fy = c.y + q.y/o.H*c.h, zs = p.cfg.selectif.zones;
+    const o = outSize(p), f = fromOut(p, q.x, q.y, o.W, o.H), fx = f[0], fy = f[1], zs = p.cfg.selectif.zones;
     let hit = null; for(let i = zs.length - 1; i >= 0; i--) if(inPoly(zs[i].pts, fx, fy)){ hit = zs[i].id; break; }
     if(hit !== S.zsel){ S.zsel = hit; renderPanel(); draw(); }
     return;
@@ -1849,7 +2094,8 @@ function moveLayer(p, id, dir){
   const t = ls[i]; ls[i] = ls[j]; ls[j] = t;
   return true;
 }
-/* rotation de la photo d'un quart de tour ; le cadre repart du maximum, les zones de flou suivent le contenu */
+/* rotation de la photo d'un quart de tour ; le cadre repart du maximum, les zones de flou suivent le contenu,
+   l'inclinaison (redressement d'horizon) est gardée */
 function rotatePhoto(p, right){
   const c = p.cfg;
   c.rotation = ((c.rotation || 0) + (right ? 90 : 270)) % 360; c.cadre = null; fixCadre(p);
@@ -1923,6 +2169,11 @@ function renderPanel(){
     const f = fmtOf(c), m = maxCadre(p), zoom = f.w ? Math.round(c.cadre.w/m.w*100) : 100;
     h += `<div class="grp"><span class="lbl">Format de publication</span>${chips(FORMATS.map(x => [x.id, x.nom, x.w ? `${x.res} · ${x.w} x ${x.h}` : x.res]), c.format, "fmt")}</div>`;
     h += `<div class="grp"><span class="lbl">Orientation de la photo</span><div class="actions"><button type="button" class="btn small ghost" data-act="rotL">Tourner à gauche</button><button type="button" class="btn small ghost" data-act="rotR">Tourner à droite</button></div></div>`;
+    if(!isBandes(p)){
+      const ic = readIncl(c.inclinaison);
+      h += `<div class="grp"><span class="lbl">Horizon<span class="val">${ic}°</span></span><div class="row"><input type="range" data-incl data-unit="°" min="${-INCL_MAX}" max="${INCL_MAX}" step="0.1" value="${ic}" aria-label="Redressement de l'horizon, en degrés"><button type="button" class="btn small ghost" data-act="incl0" style="flex:none" title="Horizon d'origine (0°)">0</button></div>`
+        + `<p class="hint">Redresse un horizon penché : la photo tourne sous le cadre, agrandie juste assez pour ne laisser aucun coin vide.</p></div>`;
+    }
     if(isBandes(p)) h += `<p class="hint">En bandeaux, le cadrage de chaque bande se règle dans l'onglet Montage : glissez la photo dans sa bande, pincez pour zoomer.</p>`;
     else if(f.w){
       h += range("Zoom du cadre", "zoom", zoom, 10, 100, " %");
@@ -2227,6 +2478,7 @@ $("panel").addEventListener("click", e => {
     if(a === "rotL" || a === "rotR") rotatePhoto(p, a === "rotR");
     else if(a === "center"){ const m = maxCadre(p); c.cadre.x = m.x + (m.w - c.cadre.w)/2; c.cadre.y = m.y + (m.h - c.cadre.h)/2; fixCadre(p); }
     else if(a === "maxc"){ c.cadre = null; fixCadre(p); }
+    else if(a === "incl0"){ if(!readIncl(c.inclinaison)) return; c.inclinaison = 0; }
     else if(a === "colReset"){ const q = colorTarget(p); copyColor(q.cfg, newCfg()); S.zsel = null; S.lasso = false; if(q !== p){ q.cache = {}; persist(q); } }
     else if(a === "colAll"){ const q = colorTarget(p); S.photos.forEach(x => { if(x !== q){ copyColor(x.cfg, q.cfg, true); x.cache = {}; if(x !== p) persist(x); } }); toast("Couleurs et filtre appliqués à toutes les photos (sans les zones au lasso)."); }
     else if(a === "colSame"){ const q = colorTarget(p); if(q !== p){ copyColor(q.cfg, c, true); q.cache = {}; persist(q); } }
@@ -2260,7 +2512,7 @@ $("panel").addEventListener("click", e => {
     else if(a === "ficheAll"){ download(new Blob([JSON.stringify(S.photos.map(x => x.cfg), noPriv, 1)], {type:"application/json"}), `esam-photos_fiches_${today()}.json`); redraw = false; }
     else if(a === "exportAll"){ exportAll(); redraw = false; }
     else if(a === "applyAll"){ applyAll(p); redraw = false; }
-    else if(a === "reset"){ p.cfg = newCfg(p.name); fixCadre(p); S.fsel = null; S.csel = null; p.modified = false; try { localStorage.removeItem(cfgKey(p)); } catch(err){} }
+    else if(a === "reset"){ p.cfg = newCfg(p.name); fixCadre(p); S.fsel = null; S.csel = null; p.modified = false; delFiche(p.key); }
     else if(a === "remove"){ removePhoto(p); return; }
     else redraw = false;
   } else return;
@@ -2270,8 +2522,10 @@ $("panel").addEventListener("click", e => {
 $("panel").addEventListener("input", e => {
   const t = e.target, p = selected(); if(!p || !t.dataset) return;
   const d = t.dataset, c = p.cfg, v = +t.value;
-  const lbl = t.parentElement && t.parentElement.querySelector(".val");
-  if(d.zoom !== undefined){ const m = maxCadre(p), o = c.cadre, w = m.w*v/100, cxp = o.x + o.w/2, cyp = o.y + o.h/2; o.w = w; o.h = w*srcW(p)/srcH(p)/(fmtOf(c).w/fmtOf(c).h); o.x = cxp - o.w/2; o.y = cyp - o.h/2; fixCadre(p); }
+  const g = t.closest && t.closest(".grp"), lbl = g && g.querySelector(".val");
+  if(t.type === "range" && (d.col || d.sel || d.incl !== undefined)) quickOn();   // couleurs, couleurs conservées, horizon : aperçu allégé pendant le glissement
+  if(d.incl !== undefined){ c.inclinaison = readIncl(v); }
+  else if(d.zoom !== undefined){ const m = maxCadre(p), o = c.cadre, w = m.w*v/100, cxp = o.x + o.w/2, cyp = o.y + o.h/2; o.w = w; o.h = w*srcW(p)/srcH(p)/(fmtOf(c).w/fmtOf(c).h); o.x = cxp - o.w/2; o.y = cyp - o.h/2; fixCadre(p); }
   else if(d.col){ const q = colorTarget(p); q.cfg.couleur[d.col] = v; if(q !== p){ q.cache = {}; clearTimeout(S.inputT2); S.inputT2 = setTimeout(() => { S.inputT2 = 0; persist(q); }, 400); } }
   else if(d.sel){ const q = colorTarget(p); q.cfg.selectif = readSelectif(q.cfg.selectif); q.cfg.selectif[d.sel] = clamp(Math.round(v), 0, 100); if(q !== p){ q.cache = {}; clearTimeout(S.inputT2); S.inputT2 = setTimeout(() => { S.inputT2 = 0; persist(q); }, 400); } }
   else if(d.nom){
@@ -2331,7 +2585,15 @@ $("panel").addEventListener("input", e => {
 });
 $("panel").addEventListener("change", e => {
   const t = e.target; if(t.dataset && t.dataset.lfield === "secteur"){ rememberSecteur(t.value); }
+  if(t.type === "range") quickOff();   // curseur relâché : rendu en pleine résolution d'aperçu
 });
+/* aperçu allégé pendant le glissement d'un curseur (S.quick, jamais dans la fiche) : la base, les couleurs et les flous sont
+   rendus à demi-résolution (moins sur un grand écran) dans un cache à part (p.cache.quick) ; la pleine résolution revient
+   au relâchement (change, pointerup) ou après 250 ms sans mouvement. Les caches de l'aperçu normal et de l'export ne sont pas touchés. */
+const QUICK_IDLE = 250, QUICK_PIX = 360000;
+function quickOn(){ S.quick = true; clearTimeout(S.quickT); S.quickT = setTimeout(quickOff, QUICK_IDLE); }
+function quickOff(){ clearTimeout(S.quickT); S.quickT = 0; if(!S.quick) return; S.quick = false; S.photos.forEach(q => { if(q.cache) q.cache.quick = null; }); draw(); }
+document.addEventListener("pointerup", () => { if(S.quick) quickOff(); });
 function refreshLayerList(p){
   Array.prototype.forEach.call($("panel").querySelectorAll("[data-csel]"), b => { const l = p.cfg.calques.find(x => x.id === b.dataset.csel); if(l) b.textContent = layerName(l); });
 }
@@ -2521,6 +2783,7 @@ vd.addEventListener("cancel", e => { e.preventDefault(); vd.querySelector('[data
 
 /* ---------- démarrage ---------- */
 $("verBadge").textContent = `v${APP_VERSION}`;
+fichesReady();                                                     // purge et reprise des fiches gardées dans le navigateur
 $("logoImg").src = document.querySelector(".top .logo").src;      // une seule copie du logo dans la page
 $("logoImg").onload = () => { draw(); };
 fontsReady().then(() => { draw(); });
