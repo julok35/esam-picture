@@ -5,7 +5,7 @@
    Aucune requête vers un autre domaine : seules les requêtes GET de la même origine, dans la portée de l'appli,
    passent par ici ; tout le reste est laissé au navigateur, sans mise en cache. */
 "use strict";
-const VERSION = "0.16";
+const VERSION = "0.17";
 const PREFIXE = "esam-picture-v";
 const CACHE = PREFIXE + VERSION;
 /* fichiers de l'appli, relatifs à sw.js (l'appli est publiée sous /esam-picture/) */

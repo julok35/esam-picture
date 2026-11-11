@@ -1300,6 +1300,55 @@ await section("export de reference", async () => {
   }
   await ctxR.close();
 });
+/* pleine définition : l'export repart du fichier d'origine quand l'image de travail (2560 px) manque de pixels.
+   Photo de 4000 x 3000 portant des rayures verticales de 2 px ; le cadre est réglé pour que la sortie fasse exactement
+   un pixel par pixel de l'original : les rayures doivent rester franches (noir ou blanc), ce qu'un agrandissement de
+   l'image de travail ne peut pas donner. */
+await section("pleine definition", async () => {
+  const ctxD = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  const pg = await ctxD.newPage();
+  const errs = []; pg.on("pageerror", e => errs.push(String(e)));
+  await pg.goto(base); await pg.evaluate(() => localStorage.clear());
+  const b64 = await pg.evaluate(() => {
+    const w = 4000, h = 3000, c = document.createElement("canvas"); c.width = w; c.height = h; const x = c.getContext("2d");
+    const g = x.createLinearGradient(0, 0, w, h); g.addColorStop(0, "#5b8def"); g.addColorStop(1, "#2a3d1f"); x.fillStyle = g; x.fillRect(0, 0, w, h);
+    x.fillStyle = "#fff"; x.fillRect(1600, 1200, 800, 600); x.fillStyle = "#000"; for (let i = 1600; i < 2400; i += 4) x.fillRect(i, 1200, 2, 600);
+    return c.toDataURL("image/jpeg", 0.95).split(",")[1];
+  });
+  await pg.setInputFiles("#fileIn", [{ name: "IMG_grande.jpg", mimeType: "image/jpeg", buffer: Buffer.from(b64, "base64") }]);
+  await pg.waitForSelector("#main:not([hidden])");
+  const zoom = async v => { await pg.click('[data-tab="cadre"]'); await pg.$eval("input[data-zoom]", (el, v) => { el.value = v; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); }, v); await pg.waitForTimeout(400); await pg.click('[data-tab="export"]'); await pg.waitForTimeout(200); };
+  /* exporte et mesure : dimensions, part de pixels francs sur une ligne au milieu des rayures */
+  const exporte = async nom => {
+    const [dl] = await Promise.all([pg.waitForEvent("download"), pg.click('[data-act="export"]')]);
+    const jpg = fs.readFileSync(await dl.path()); fs.writeFileSync(path.join(caps, `pc_definition_${nom}.jpg`), jpg);
+    return pg.evaluate(async b => new Promise(r => { const i = new Image(); i.onload = () => {
+      const c = document.createElement("canvas"); c.width = i.naturalWidth; c.height = i.naturalHeight; const x = c.getContext("2d"); x.drawImage(i, 0, 0);
+      const d = x.getImageData(Math.round(c.width * 0.45), Math.round(c.height / 2), Math.round(c.width * 0.1), 1).data; let n = 0;
+      for (let k = 0; k < d.length; k += 4) if (d[k] < 70 || d[k] > 185) n++;
+      r({ w: c.width, h: c.height, franc: n / (d.length / 4) }); }; i.src = "data:image/jpeg;base64," + b; }), jpg.toString("base64"));
+  };
+  // réseaux, cadre serré : 36 % du cadre maximal = 1080 px de l'original (691 px seulement dans l'image de travail)
+  await zoom(36);
+  const hint1 = await pg.textContent("[data-defhint]");
+  check(hint1.includes("4000 x 3000 px") && hint1.includes("le cadre en garde 1080 x 1080") && !hint1.includes("agrandie"), `onglet Export : ${hint1.slice(0, 70)}`);
+  const r1 = await exporte("reseaux");
+  check(r1.w === 1080 && r1.h === 1080 && r1.franc > 0.9, `réseaux, cadre serré : ${r1.w}x${r1.h}, rayures de 2 px nettes (${Math.round(r1.franc * 100)} % de pixels francs)`);
+  // presse : 72 % du cadre maximal = 2160 px de l'original, soit la taille de la sortie doublée
+  await zoom(72);
+  await pg.click('[data-qual="presse"]'); await pg.waitForTimeout(200);
+  const r2 = await exporte("presse");
+  check(r2.w === 2160 && r2.h === 2160 && r2.franc > 0.9, `presse : ${r2.w}x${r2.h}, rayures de 2 px nettes (${Math.round(r2.franc * 100)} % de pixels francs)`);
+  // cadre plus serré que la sortie : l'onglet le dit
+  await zoom(20);
+  const hint3 = await pg.textContent("[data-defhint]");
+  check(hint3.includes("le cadre en garde 600 x 600") && hint3.includes("l'image est agrandie"), "cadre plus serré que la sortie : agrandissement signalé");
+  await pg.screenshot({ path: path.join(caps, "pc_definition.png") });
+  // l'aperçu d'une grande photo (réduction par moitiés) se dessine sans erreur dans chaque vue
+  for (const t of ["cadre", "couleur", "calques"]) { await pg.click(`[data-tab="${t}"]`); await pg.waitForTimeout(150); }
+  check(errs.length === 0, `aucune erreur de page (${errs.join(" | ").slice(0, 200)})`);
+  await ctxD.close();
+});
 if (only && !nSections) { failures++; console.log(`\nECHEC aucune section ne correspond à « ${only} »`); }
 await browser.close(); server.close();
 console.log(failures ? `\n${failures} échec(s)` : "\nTout est passé.");
