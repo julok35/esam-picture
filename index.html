@@ -337,7 +337,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 /* Photos ESAM : préparation d'images pour les réseaux sociaux. Un seul fichier, pas de build, ES2017.
    Sections : utils, modèle, formats, chargement, dossier de travail, rendu (base, couleur, flous, calques),
    aperçu et interactions, panneaux, export, démarrage. Voir docs/ARCHITECTURE.md. */
-const APP_VERSION = "0.16";   // à garder égale à VERSION de sw.js (vérifié par le test)
+const APP_VERSION = "0.17";   // à garder égale à VERSION de sw.js (vérifié par le test)
 /* pied standard du texte de publication proposé (onglet Export, bouton « Proposer ») : à modifier ici */
 const PUB_PIED = "Équipe de Secours Animalier en Montagne\n#ESAM #SecoursAnimalier #Montagne";
 const $ = id => document.getElementById(id);
@@ -754,31 +754,33 @@ function imgDims(file){
    taille de travail au lieu d'un bitmap pleine taille. Seule la largeur voulue est imposée (resizeWidth) : le navigateur
    calcule la hauteur selon sa propre lecture de l'orientation, l'image ne peut donc pas être déformée. null en cas d'échec
    ou de doute (options ignorées, orientation appliquée autrement : taille ou proportions inattendues) */
-async function decodeSmall(file){
+async function decodeSmall(file, max){
   if(typeof createImageBitmap !== "function") return null;
   let d = null;
   try { d = await jpegDims(file); } catch(e){ d = null; }
   if(!d) d = await imgDims(file);
   if(!d || !d.w || !d.h) return null;
-  const k = MAXW/Math.max(d.w, d.h); if(k >= 1) return null;          // déjà assez petite : chemin habituel
+  const k = (max || MAXW)/Math.max(d.w, d.h); if(k >= 1) return null;   // déjà assez petite : chemin habituel
   const rw = Math.max(1, Math.round(d.w*k)), rh = Math.max(1, Math.round(d.h*k));
   const bm = await createImageBitmap(file, {imageOrientation:"from-image", resizeWidth:rw, resizeQuality:"high"});
   if(Math.abs(bm.width - rw) > 1 || Math.abs(bm.height - rh) > 2){ if(bm.close) bm.close(); return null; }
   const c = mkCanvas(rw, rh);                                          // mêmes dimensions que le chemin habituel (arrondi d'un pixel près)
   c.getContext("2d").drawImage(bm, 0, 0, rw, rh);
   if(bm.close) bm.close();
-  return c;
+  return {img:c, fw:d.w, fh:d.h};
 }
-async function decode(file){
-  try { const c = await decodeSmall(file); if(c) return c; } catch(e){}   // repli silencieux sur le chemin habituel
+/* décode un fichier dans un canvas de côté long max au plus : l'image de travail (MAXW) au chargement, la pleine
+   définition (HIMAX) le temps d'un export. Renvoie {img, fw, fh} : le canvas et la taille d'origine du fichier. */
+async function decode(file, max){
+  try { const r = await decodeSmall(file, max); if(r) return r; } catch(e){}   // repli silencieux sur le chemin habituel
   // createImageBitmap applique l'orientation EXIF (téléphones) ; repli sur <img> (Safari ancien)
   let src, w, h;
   try { src = await createImageBitmap(file, {imageOrientation:"from-image"}); w = src.width; h = src.height; }
   catch(e){ src = await loadImage(file); w = src.naturalWidth; h = src.naturalHeight; }
-  const k = Math.min(1, MAXW/Math.max(w, h)), c = mkCanvas(w*k, h*k);
+  const k = Math.min(1, (max || MAXW)/Math.max(w, h)), c = mkCanvas(w*k, h*k);
   c.getContext("2d").drawImage(src, 0, 0, c.width, c.height);
   if(src.close) src.close();
-  return c;
+  return {img:c, fw:w, fh:h};
 }
 /* date et heure de prise de vue dans l'EXIF du fichier d'origine (DateTimeOriginal, sinon DateTime) :
    {date:"AAAA-MM-JJ", heure:"hhmmss"} ou null ; ne lit que les 256 premiers ko, tolère tout fichier non JPEG */
@@ -827,10 +829,10 @@ async function addPhotos(items, fiches){
     n++; prog.textContent = `Lecture ${n}/${items.length} : ${it.file.name}`;
     const key = `${it.file.name}|${it.file.size}|${it.file.lastModified}`;
     if(S.photos.some(p => p.key === key)) continue;
-    let img;
-    try { img = await decode(it.file); }
+    let img, dec;
+    try { dec = await decode(it.file); img = dec.img; }
     catch(e){ toast(`${it.file.name} : ${e.message}`); continue; }
-    const p = {id:uid(), name:it.file.name, path:it.path || it.file.name, file:it.file, key:key, w:img.width, h:img.height, img:img, thumb:makeThumb(img), cfg:newCfg(it.file.name), cache:{}, modified:false, prise:(await readShot(it.file)) || shotOfFile(it.file)};
+    const p = {id:uid(), name:it.file.name, path:it.path || it.file.name, file:it.file, key:key, w:img.width, h:img.height, fw:dec.fw, fh:dec.fh, img:img, thumb:makeThumb(img), cfg:newCfg(it.file.name), cache:{}, modified:false, prise:(await readShot(it.file)) || shotOfFile(it.file)};
     fixCadre(p);
     const fiche = (fiches && (fiches[p.path] || fiches[p.name])) || pendingFiches[p.path] || pendingFiches[p.name];
     let repris = false;
@@ -1102,19 +1104,36 @@ function deltaFromOut(p, dx, dy, W, H){
   const a = fromOut(p, 0, 0, W, H), b = fromOut(p, dx, dy, W, H); return [b[0] - a[0], b[1] - a[1]];
 }
 /* dessine la source tournée puis inclinée (T) dans ctx, repère = source tournée (srcW x srcH) à l'échelle k */
-function drawInclined(ctx, q, k, t){
-  if(!t){ drawRotated(ctx, q, k); return; }
+function drawInclined(ctx, q, k, t, ks){
+  if(!t){ drawRotated(ctx, q, k, ks); return; }
   ctx.save(); ctx.translate(t.cx*k, t.cy*k); ctx.rotate(t.a); ctx.scale(t.k, t.k); ctx.translate(-t.cx*k, -t.cy*k);
-  drawRotated(ctx, q, k); ctx.restore();
+  drawRotated(ctx, q, k, (ks || k)*t.k); ctx.restore();
 }
-/* dessine la source tournée (cfg.rotation) dans ctx, repère = image tournée (srcW x srcH), à l'échelle k */
-function drawRotated(ctx, p, k){
-  const r = p.cfg.rotation || 0;
+/* image à dessiner pour une échelle ks (pixels du canvas par pixel de l'image de travail) : la pleine définition si elle
+   est chargée (p.hi, le temps d'un export : voir renderExport), sinon l'image de travail ; réduite de moitié autant de
+   fois qu'il faut pour que la dernière mise à l'échelle reste entre 1/2 et 1 (réduire de plus de 2 en une passe crénelle
+   les détails fins : poils, herbe, cordes ; c'est surtout le cas de l'aperçu d'un téléphone). Les réductions de l'image
+   de travail sont gardées (p.mips). */
+function srcFor(p, ks){
+  const top = p.hi || p.img, mips = p.hi ? (p.hiMips || (p.hiMips = [])) : (p.mips || (p.mips = []));
+  let n = 0, s = ks*p.w/top.width;
+  while(s <= 0.5 && n < 4){ n++; s *= 2; }
+  for(let i = 0; i < n; i++){
+    if(mips[i]) continue;
+    const a = i ? mips[i - 1] : top, c = mkCanvas(a.width/2, a.height/2), x = c.getContext("2d");
+    x.imageSmoothingQuality = "high"; x.drawImage(a, 0, 0, c.width, c.height); mips[i] = c;
+  }
+  return n ? mips[n - 1] : top;
+}
+/* dessine la source tournée (cfg.rotation) dans ctx, repère = image tournée (srcW x srcH), à l'échelle k ;
+   ks = échelle réelle si ctx porte déjà une transformation (vue « cadre », inclinaison) */
+function drawRotated(ctx, p, k, ks){
+  const r = p.cfg.rotation || 0, im = srcFor(p, ks || k);
   ctx.save(); ctx.scale(k, k);
   if(r === 90){ ctx.translate(p.h, 0); ctx.rotate(Math.PI/2); }
   else if(r === 180){ ctx.translate(p.w, p.h); ctx.rotate(Math.PI); }
   else if(r === 270){ ctx.translate(0, p.w); ctx.rotate(-Math.PI/2); }
-  ctx.drawImage(p.img, 0, 0);
+  if(im === p.img) ctx.drawImage(im, 0, 0); else ctx.drawImage(im, 0, 0, p.w, p.h);   // toujours dans le repère de l'image de travail
   ctx.restore();
 }
 let RAW = false;   // rendu « Original » en cours : couleurs et filtre neutres (voir origCanvas)
@@ -1306,7 +1325,7 @@ function cached(p, key, make){
 }
 function prepCanvas(p, q, maxSide){
   return cached(p, JSON.stringify(["prep", q.id, q.cfg.rotation, colKey(q.cfg), maxSide]), () => {
-    const sw = srcW(q), sh = srcH(q), k = Math.min(1, maxSide/Math.max(sw, sh)), c = mkCanvas(sw*k, sh*k);
+    const sw = srcW(q), sh = srcH(q), k = Math.min(q.hi ? q.hi.width/q.w : 1, maxSide/Math.max(sw, sh)), c = mkCanvas(sw*k, sh*k);
     drawRotated(c.getContext("2d"), q, k); applyColor(c, colorParams(q.cfg)); return c;
   });
 }
@@ -2043,7 +2062,7 @@ function drawCropView(p){
   // avec une inclinaison, la photo est montrée tournée (et agrandie du même facteur) autour du centre du cadre, qui reste
   // droit : l'intérieur du cadre est exactement l'image exportée ; une grille plus fine aide à caler l'horizon
   const t = inclP(p), n = t ? 6 : 3;
-  drawInclined(ctx, p, 1, t);
+  drawInclined(ctx, p, 1, t, V.k);
   const c = cropRect(p);
   ctx.fillStyle = "rgba(0,0,0,.55)";
   ctx.beginPath(); ctx.rect(0, 0, sw, sh); ctx.rect(c.x, c.y + c.h, c.w, -c.h); ctx.fill("evenodd");   // assombrit hors cadre
@@ -2584,7 +2603,7 @@ function renderPanel(){
       + `<div class="grp"><textarea class="field" data-pub="alt" rows="2" maxlength="${ALT_MAX}" aria-label="Texte alternatif" placeholder="Description de l'image pour les personnes aveugles ou malvoyantes">${esc(pb.alt)}</textarea>`
       + `<div class="actions" style="margin-top:6px"><button type="button" class="btn small ghost" data-act="altPropose">Proposer</button><button type="button" class="btn small ghost" data-act="altCopy">Copier</button></div></div>`
       + `<p class="hint">« Proposer » rédige le texte d'après la légende (animal, date, secteur) et le titre ; le pied standard ESAM et les mots-dièse sont ajoutés à la publication. Les deux textes sont joints à l'export dans un fichier .txt (dossier de travail, ZIP) ; le partage passe le texte de publication.</p></div>`;
-    h += `<div class="grp"><span class="lbl">Qualité</span>${chips(QUALITES, S.qualite, "qual")}<p class="hint">${pr ? `Presse : ${ox.W} x ${ox.H} px, pour un journal ou une impression ; le nom du fichier se termine par _presse.` : "Réseaux : la taille recommandée par les réseaux sociaux."} Réglage gardé dans ce navigateur.</p></div>`;
+    h += `<div class="grp"><span class="lbl">Qualité</span>${chips(QUALITES, S.qualite, "qual")}<p class="hint">${pr ? `Presse : ${ox.W} x ${ox.H} px, pour un journal ou une impression ; le nom du fichier se termine par _presse.` : "Réseaux : la taille recommandée par les réseaux sociaux."} Réglage gardé dans ce navigateur.</p>${definitionHint(p, ox)}</div>`;
     h += `<div class="actions"><button type="button" class="btn primary" data-act="export">Exporter la photo</button>${navigator.canShare ? `<button type="button" class="btn" data-act="share">Partager...</button>` : ""}</div>`;
     h += `<div class="sub"><div class="lbl">Déclinaisons</div><p class="hint">La même photo dans plusieurs formats, en une fois : chaque format reprend son dernier cadre réglé (sinon le cadre maximal), les calques suivent. Le nom de chaque fichier se termine par le format (_carre, _story...).</p>`
       + `<div class="chips">${FORMATS.filter(x => !x.carrousel).map(x => { const cur = x.id === c.format; return `<label class="chip ck"><input type="checkbox" data-decl="${x.id}"${cur || S.decl[x.id] ? " checked" : ""}${cur ? " disabled" : ""}>${esc(x.nom)}${cur ? " (courant)" : ""}</label>`; }).join("")}</div>`
@@ -3218,6 +3237,13 @@ S.qualite = prefGet("qualite", "reseaux") === "presse" ? "presse" : "reseaux";
 S.zipFiches = prefGet("zipFiches", "1") !== "0";   // « Inclure les fiches » dans les ZIP
 S.decl = {};                                         // formats cochés dans « Déclinaisons » (transitoire)
 function presse(){ return S.qualite === "presse"; }
+/* ce que la photo d'origine contient dans le cadre, face à la taille exportée o (rien en bandeaux : chaque bande a sa photo) */
+function definitionHint(p, o){
+  if(isBandes(p) || !p.fw || !p.cfg.cadre) return "";
+  const c = p.cfg, inc = inclP(p), k = hiK(p)/(inc ? inc.k : 1), cw = Math.round(c.cadre.w*srcW(p)*k), ch = Math.round(c.cadre.h*srcH(p)*k), tourne = c.rotation % 180;
+  return `<p class="hint" data-defhint="1">Photo d'origine : ${tourne ? p.fh : p.fw} x ${tourne ? p.fw : p.fh} px ; le cadre en garde ${cw} x ${ch}${Math.max(p.fw, p.fh) > HIMAX ? ` (photo relue à ${HIMAX} px de côté long au plus)` : ""}. `
+    + (cw < o.W*0.98 ? `C'est moins que la taille exportée (${o.W} x ${o.H}) : l'image est agrandie et ne peut pas être plus nette. Élargissez le cadre pour gagner en netteté.` : "L'export part de la photo d'origine : aucun détail n'est perdu en dehors de la mise à la taille.") + `</p>`;
+}
 function exportSize(o, pr){ const k = pr ? Math.min(2, PRESSE_MAX/Math.max(o.W, o.H)) : 1; return {W:Math.round(o.W*k), H:Math.round(o.H*k)}; }
 /* copie de travail de la photo pour un rendu d'export : fiche copiée en profondeur, cache vide ; le format peut être forcé
    (déclinaisons : cadre du format mémorisé dans cfg.cadres, sinon maximal). La photo elle-même (format, cadre, cache de
@@ -3227,12 +3253,35 @@ function exportCopy(p, fmt){
   if(fmt && fmt !== t.cfg.format && FORMATS.some(f => f.id === fmt)) setFormat(t, fmt); else fixCadre(t);
   return t;
 }
+/* Pleine définition à l'export : l'image de travail (côté long MAXW) manque de pixels dès que la sortie en demande plus
+   (qualité presse, cadre serré, carrousel, loupe). Le fichier d'origine est alors relu, côté long HIMAX au plus (surface
+   maximale d'un canvas d'iPhone), et posé dans q.hi le temps du rendu : drawRotated le dessine dans le repère de l'image
+   de travail, rien d'autre ne change. hiK : pixels disponibles dans le fichier, en facteur de l'image de travail. */
+const HIMAX = 4096;
+function hiK(q){ return Math.max(1, Math.min(HIMAX, Math.max(q.fw || q.w, q.fh || q.h))/Math.max(q.w, q.h)); }
+/* photos (la copie t elle-même, celles du montage, celles des loupes) à relire pour une sortie o */
+function hiWanted(t, o){
+  const out = [], m = t.cfg.montage, os = outSize(t), u = unitOf(t, o.W, o.H);
+  const add = (q, px) => { if(q && q.file && hiK(q) > 1.01 && px > srcW(q)*1.01 && out.indexOf(q) < 0) out.push(q); };   // px : largeur qu'occuperait la source entière dans la sortie
+  if(isBandes(t)) paneRects(m, m.bandes.length, os.W, os.H, t).forEach((r, i) => { const b = m.bandes[i]; if(b && b.cadre) add(photoOf(t, b.src), r.w*o.W/os.W/b.cadre.w); });
+  else {
+    const inc = inclP(t); add(t, o.W/t.cfg.cadre.w*(inc ? inc.k : 1));
+    if(m && m.mode === "fusion" && m.fusion) add(photoOf(t, m.fusion.src), o.W*m.fusion.s);
+  }
+  t.cfg.calques.forEach(l => { if(l.type === "zoom" && l.zone && !zoomFromBase(t, l)) add(zoomSrc(t, l), loupeSize(u, l).w*l.s/Math.max(0.02, l.zone.w)); });
+  return out;
+}
 /* rendu plein format (W x H du format, doublé en qualité presse) dans un cache à part, JPEG avec les métadonnées ESAM ;
    opt.canvas : le canvas rendu (taille du format, sans la qualité presse) et la copie, pour le découper (carrousel) */
 async function renderExport(p, fmt, opt){
   await fontsReady();
   const raw = !!(opt && opt.canvas), t = exportCopy(p, fmt), pr = !raw && presse(), o = exportSize(outSize(t), pr), c = mkCanvas(o.W, o.H), ctx = c.getContext("2d");
-  renderAll(ctx, t, o.W, o.H, o.W, o.H);
+  fixMontage(t);
+  const list = hiWanted(t, o), his = [];
+  for(const q of list){ try { his.push((await decode(q.file, HIMAX)).img); } catch(e){ his.push(null); } }   // illisible ou trop lourd : l'image de travail fera l'affaire
+  list.forEach((q, i) => { if(his[i] && his[i].width > q.w) q.hi = his[i]; });
+  try { renderAll(ctx, t, o.W, o.H, o.W, o.H); }
+  finally { list.forEach((q, i) => { delete q.hi; delete q.hiMips; if(his[i]) his[i].width = his[i].height = 1; }); }   // mémoire rendue tout de suite (téléphone)
   if(raw) return {canvas:c, copy:t};
   return withMeta(await toBlob(c, "image/jpeg", pr ? 0.97 : 0.92), t.cfg.meta);
 }
