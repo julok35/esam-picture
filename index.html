@@ -337,7 +337,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 /* Photos ESAM : préparation d'images pour les réseaux sociaux. Un seul fichier, pas de build, ES2017.
    Sections : utils, modèle, formats, chargement, dossier de travail, rendu (base, couleur, flous, calques),
    aperçu et interactions, panneaux, export, démarrage. Voir docs/ARCHITECTURE.md. */
-const APP_VERSION = "0.17";   // à garder égale à VERSION de sw.js (vérifié par le test)
+const APP_VERSION = "0.18";   // à garder égale à VERSION de sw.js (vérifié par le test)
 /* pied standard du texte de publication proposé (onglet Export, bouton « Proposer ») : à modifier ici */
 const PUB_PIED = "Équipe de Secours Animalier en Montagne\n#ESAM #SecoursAnimalier #Montagne";
 const $ = id => document.getElementById(id);
@@ -2472,7 +2472,7 @@ function renderPanel(){
       h += range("Zoom du cadre", "zoom", zoom, 10, 100, " %");
       h += `<div class="actions"><button type="button" class="btn small ghost" data-act="center">Centrer le cadre</button><button type="button" class="btn small ghost" data-act="maxc">Cadre maximal</button></div>`;
       h += `<p class="hint">Sur l'image : glissez le cadre, pincez ou tirez un coin pour le redimensionner. Le cadre garde les proportions du format choisi.</p>`;
-    } else h += `<p class="hint">Format original : la photo est exportée entière (côté long limité à 2048 px).</p>`;
+    } else h += `<p class="hint">Format original : la photo est exportée entière (côté long de 2048 px en qualité Réseaux, jusqu'à 4096 px en Presse ou Maximale).</p>`;
   } else if(S.tab === "montage"){
     fixMontage(p);
     const m = c.montage;
@@ -2578,8 +2578,8 @@ function renderPanel(){
     } else h += `<p class="hint">Aucun élément pour l'instant : ajoutez le logo, un titre, un texte, une légende, une flèche, un cercle ou des éléments de cadre, ou appliquez un modèle.</p>`;
     h += modelesPanel(p);
   } else if(S.tab === "export"){
-    const o = outSize(p), f = fmtOf(c), name = exportName(p), pr = presse(), ox = exportSize(o, pr);
-    h += `<div class="card"><div class="kv">Photo : <b>${esc(p.path)}</b></div><div class="kv">Format : <b>${esc(f.nom)}</b> (${esc(f.res)}), <b>${o.W} x ${o.H}</b> px, JPEG</div>${pr ? `<div class="kv">Qualité presse : <b>${ox.W} x ${ox.H}</b> px, JPEG 97 %</div>` : ""}<div class="kv">Fichier exporté : <b data-outname="1">${esc(name)}</b></div>${f.n ? `<div class="kv">Carrousel : « Exporter la photo » donne la bande entière ; « Exporter le carrousel » la découpe en <b>${f.n} diapositives</b>.</div>` : ""}`;
+    const o = outSize(p), f = fmtOf(c), name = exportName(p), ql = S.qualite, pr = ql !== "reseaux", ox = exportSize(p, ql);
+    h += `<div class="card"><div class="kv">Photo : <b>${esc(p.path)}</b></div><div class="kv">Format : <b>${esc(f.nom)}</b> (${esc(f.res)}), <b>${o.W} x ${o.H}</b> px, JPEG</div>${pr ? `<div class="kv">Qualité ${ql === "max" ? "maximale" : "presse"} : <b>${ox.W} x ${ox.H}</b> px, JPEG 97 %</div>` : ""}<div class="kv">Fichier exporté : <b data-outname="1">${esc(name)}</b></div>${f.n ? `<div class="kv">Carrousel : « Exporter la photo » donne la bande entière ; « Exporter le carrousel » la découpe en <b>${f.n} diapositives</b>.</div>` : ""}`;
     if(isMontage(p)){ const m = c.montage, fq = m.fusion ? photoOf(p, m.fusion.src) : null; h += `<div class="kv">Montage : <b>${m.mode === "bandes" ? `${m.bandes.length} bandeaux ${m.sens === "h" ? "empilés" : "côte à côte"}` : `superposition de ${esc(fq ? fq.name : (m.fusion && m.fusion.src) || "photo manquante")} (dessus) sur ${esc(p.name)} (dessous)`}</b></div>`; }
     const loupes = c.calques.filter(l => l.type === "zoom"); if(loupes.length) h += `<div class="kv">Zoom incrusté : <b>${loupes.map(l => l.src ? esc(l.src) : "une zone de la photo").join(", ")}</b></div>`;
     if(S.dirWritable) h += `<div class="kv">Dossier de travail : les exports vont dans <b>publication/</b>, la fiche est enregistrée à côté de la photo ${p.ficheOk ? "(à jour)" : ""}.</div>`;
@@ -2603,7 +2603,7 @@ function renderPanel(){
       + `<div class="grp"><textarea class="field" data-pub="alt" rows="2" maxlength="${ALT_MAX}" aria-label="Texte alternatif" placeholder="Description de l'image pour les personnes aveugles ou malvoyantes">${esc(pb.alt)}</textarea>`
       + `<div class="actions" style="margin-top:6px"><button type="button" class="btn small ghost" data-act="altPropose">Proposer</button><button type="button" class="btn small ghost" data-act="altCopy">Copier</button></div></div>`
       + `<p class="hint">« Proposer » rédige le texte d'après la légende (animal, date, secteur) et le titre ; le pied standard ESAM et les mots-dièse sont ajoutés à la publication. Les deux textes sont joints à l'export dans un fichier .txt (dossier de travail, ZIP) ; le partage passe le texte de publication.</p></div>`;
-    h += `<div class="grp"><span class="lbl">Qualité</span>${chips(QUALITES, S.qualite, "qual")}<p class="hint">${pr ? `Presse : ${ox.W} x ${ox.H} px, pour un journal ou une impression ; le nom du fichier se termine par _presse.` : "Réseaux : la taille recommandée par les réseaux sociaux."} Réglage gardé dans ce navigateur.</p>${definitionHint(p, ox)}</div>`;
+    h += `<div class="grp"><span class="lbl">Qualité</span>${chips(QUALITES, S.qualite, "qual")}<p class="hint">${ql === "max" ? `Maximale : ${ox.W} x ${ox.H} px, toute la définition de la photo dans le cadre, sans agrandissement ; le nom du fichier se termine par _max.` : pr ? `Presse : ${ox.W} x ${ox.H} px, pour un journal ou une impression ; le nom du fichier se termine par _presse.` : "Réseaux : la taille recommandée par les réseaux sociaux, fichier léger."} Réglage gardé dans ce navigateur.</p>${definitionHint(p, ox)}</div>`;
     h += `<div class="actions"><button type="button" class="btn primary" data-act="export">Exporter la photo</button>${navigator.canShare ? `<button type="button" class="btn" data-act="share">Partager...</button>` : ""}</div>`;
     h += `<div class="sub"><div class="lbl">Déclinaisons</div><p class="hint">La même photo dans plusieurs formats, en une fois : chaque format reprend son dernier cadre réglé (sinon le cadre maximal), les calques suivent. Le nom de chaque fichier se termine par le format (_carre, _story...).</p>`
       + `<div class="chips">${FORMATS.filter(x => !x.carrousel).map(x => { const cur = x.id === c.format; return `<label class="chip ck"><input type="checkbox" data-decl="${x.id}"${cur || S.decl[x.id] ? " checked" : ""}${cur ? " disabled" : ""}>${esc(x.nom)}${cur ? " (courant)" : ""}</label>`; }).join("")}</div>`
@@ -2827,7 +2827,7 @@ $("panel").addEventListener("click", e => {
     else sel.teintes = TEINTES.map(t => t[0]).filter(t => t === d.steinte || sel.teintes.indexOf(t) >= 0);
     if(q !== p){ q.cache = {}; persist(q); }
   }
-  else if(d.qual){ S.qualite = d.qual === "presse" ? "presse" : "reseaux"; prefSet("qualite", S.qualite); renderPanel(); return; }
+  else if(d.qual){ S.qualite = readQualite(d.qual); prefSet("qualite", S.qualite); renderPanel(); return; }
   else if(d.aapick){ S.aaSrc = d.aapick; renderPanel(); return; }
   else if(d.carn || d.carforme){ setCarrousel(p, d.carn ? {n:+d.carn} : {forme:d.carforme}); }
   else if(d.modact){ modAction(p, d.modact, d.mid); return; }
@@ -3227,16 +3227,18 @@ async function withMeta(blob, meta){
   }
   return new Blob([b.subarray(0, 2)].concat(head, [new Uint8Array(exifSeg(m)), new Uint8Array(xmpSeg(m))], rest, [b.subarray(i)]), {type:"image/jpeg"});
 }
-/* qualité d'export (préférence de l'utilisateur, localStorage, pas dans la fiche) : réseaux (taille du format, JPEG 92 %)
-   ou presse (dimensions doublées, côté long limité à 4096 px, JPEG 97 %, suffixe _presse) */
-const QUALITES = [["reseaux", "Réseaux", "JPEG 92 %, taille du format"], ["presse", "Presse", "JPEG 97 %, dimensions doublées"]];
+/* qualité d'export (préférence de l'utilisateur, localStorage, pas dans la fiche) : réseaux (taille du format, JPEG 92 %),
+   presse (dimensions doublées, côté long limité à 4096 px, JPEG 97 %, suffixe _presse ; choix par défaut) ou max (toute la
+   définition de la photo d'origine dans le cadre, sans agrandissement, côté long limité à 4096 px, JPEG 97 %, suffixe _max) */
+const QUALITES = [["reseaux", "Réseaux", "JPEG 92 %, taille du format"], ["presse", "Presse", "JPEG 97 %, dimensions doublées"], ["max", "Maximale", "JPEG 97 %, définition de la photo"]];
+const QUAL_SUFFIXE = {reseaux:"", presse:"_presse", max:"_max"};
+function readQualite(v){ return QUALITES.some(x => x[0] === v) ? v : "presse"; }
 const PRESSE_MAX = 4096;
 function prefGet(k, def){ try { const v = localStorage.getItem(`esam-picture:${k}`); return v == null ? def : v; } catch(e){ return def; } }
 function prefSet(k, v){ try { localStorage.setItem(`esam-picture:${k}`, v); } catch(e){} }
-S.qualite = prefGet("qualite", "reseaux") === "presse" ? "presse" : "reseaux";
+S.qualite = readQualite(prefGet("qualite", "presse"));
 S.zipFiches = prefGet("zipFiches", "1") !== "0";   // « Inclure les fiches » dans les ZIP
 S.decl = {};                                         // formats cochés dans « Déclinaisons » (transitoire)
-function presse(){ return S.qualite === "presse"; }
 /* ce que la photo d'origine contient dans le cadre, face à la taille exportée o (rien en bandeaux : chaque bande a sa photo) */
 function definitionHint(p, o){
   if(isBandes(p) || !p.fw || !p.cfg.cadre) return "";
@@ -3244,7 +3246,24 @@ function definitionHint(p, o){
   return `<p class="hint" data-defhint="1">Photo d'origine : ${tourne ? p.fh : p.fw} x ${tourne ? p.fw : p.fh} px ; le cadre en garde ${cw} x ${ch}${Math.max(p.fw, p.fh) > HIMAX ? ` (photo relue à ${HIMAX} px de côté long au plus)` : ""}. `
     + (cw < o.W*0.98 ? `C'est moins que la taille exportée (${o.W} x ${o.H}) : l'image est agrandie et ne peut pas être plus nette. Élargissez le cadre pour gagner en netteté.` : "L'export part de la photo d'origine : aucun détail n'est perdu en dehors de la mise à la taille.") + `</p>`;
 }
-function exportSize(o, pr){ const k = pr ? Math.min(2, PRESSE_MAX/Math.max(o.W, o.H)) : 1; return {W:Math.round(o.W*k), H:Math.round(o.H*k)}; }
+/* définition d'origine de ce que montre la sortie, en facteur de la taille du format : largeur de source (fichier d'origine)
+   couverte par le cadre, ou par la bande la mieux définie d'un montage en bandeaux, / largeur correspondante de la sortie */
+function nativeK(t){
+  const o = outSize(t), m = t.cfg.montage;
+  if(isBandes(t)){
+    fixMontage(t); let k = 0;
+    paneRects(m, m.bandes.length, o.W, o.H, t).forEach((r, i) => { const b = m.bandes[i], q = b && photoOf(t, b.src); if(q && b.cadre) k = Math.max(k, b.cadre.w*srcW(q)*hiK(q)/r.w); });
+    return k || 1;
+  }
+  const inc = inclP(t); return t.cfg.cadre.w*srcW(t)*hiK(t)/(inc ? inc.k : 1)/o.W;
+}
+/* taille du JPEG pour une qualité : le format (réseaux), le double (presse), ou ce que la photo contient (max : jamais
+   moins que le format, jamais d'agrandissement au-delà) ; côté long PRESSE_MAX au plus hors réseaux */
+function exportSize(t, ql){
+  const o = outSize(t), cap = PRESSE_MAX/Math.max(o.W, o.H);
+  const k = ql === "presse" ? Math.min(2, cap) : ql === "max" ? clamp(nativeK(t), 1, Math.max(1, cap)) : 1;
+  return {W:Math.round(o.W*k), H:Math.round(o.H*k)};
+}
 /* copie de travail de la photo pour un rendu d'export : fiche copiée en profondeur, cache vide ; le format peut être forcé
    (déclinaisons : cadre du format mémorisé dans cfg.cadres, sinon maximal). La photo elle-même (format, cadre, cache de
    l'aperçu) n'est pas touchée ; les calques (unités u, voir unitOf) et les zones en fraction de la source suivent. */
@@ -3271,11 +3290,11 @@ function hiWanted(t, o){
   t.cfg.calques.forEach(l => { if(l.type === "zoom" && l.zone && !zoomFromBase(t, l)) add(zoomSrc(t, l), loupeSize(u, l).w*l.s/Math.max(0.02, l.zone.w)); });
   return out;
 }
-/* rendu plein format (W x H du format, doublé en qualité presse) dans un cache à part, JPEG avec les métadonnées ESAM ;
+/* rendu plein format (W x H du format, doublé en qualité presse, définition de la photo en qualité maximale) dans un cache à part, JPEG avec les métadonnées ESAM ;
    opt.canvas : le canvas rendu (taille du format, sans la qualité presse) et la copie, pour le découper (carrousel) */
 async function renderExport(p, fmt, opt){
   await fontsReady();
-  const raw = !!(opt && opt.canvas), t = exportCopy(p, fmt), pr = !raw && presse(), o = exportSize(outSize(t), pr), c = mkCanvas(o.W, o.H), ctx = c.getContext("2d");
+  const raw = !!(opt && opt.canvas), t = exportCopy(p, fmt), ql = raw ? "reseaux" : S.qualite, o = exportSize(t, ql), c = mkCanvas(o.W, o.H), ctx = c.getContext("2d");
   fixMontage(t);
   const list = hiWanted(t, o), his = [];
   for(const q of list){ try { his.push((await decode(q.file, HIMAX)).img); } catch(e){ his.push(null); } }   // illisible ou trop lourd : l'image de travail fera l'affaire
@@ -3283,10 +3302,10 @@ async function renderExport(p, fmt, opt){
   try { renderAll(ctx, t, o.W, o.H, o.W, o.H); }
   finally { list.forEach((q, i) => { delete q.hi; delete q.hiMips; if(his[i]) his[i].width = his[i].height = 1; }); }   // mémoire rendue tout de suite (téléphone)
   if(raw) return {canvas:c, copy:t};
-  return withMeta(await toBlob(c, "image/jpeg", pr ? 0.97 : 0.92), t.cfg.meta);
+  return withMeta(await toBlob(c, "image/jpeg", ql === "reseaux" ? 0.92 : 0.97), t.cfg.meta);
 }
-/* nom d'un export : nom courant, suffixe du format (déclinaisons) puis _presse, avant l'extension */
-function exportName(p, fmt){ return outName(p).replace(/\.jpg$/, `${fmt ? `_${fmt}` : ""}${presse() ? "_presse" : ""}.jpg`); }
+/* nom d'un export : nom courant, suffixe du format (déclinaisons) puis de la qualité (_presse, _max), avant l'extension */
+function exportName(p, fmt){ return outName(p).replace(/\.jpg$/, `${fmt ? `_${fmt}` : ""}${QUAL_SUFFIXE[S.qualite] || ""}.jpg`); }
 function stemOfJpg(n){ return n.replace(/\.jpg$/, ""); }
 /* fichier texte joint à l'export : le texte alternatif, une ligne vide, le texte de publication (rien si les deux sont vides) */
 function pubTxt(p){ const b = readPub(p.cfg.pub); return b.alt || b.texte ? new Blob([`${b.alt}\n\n${b.texte}`], {type:"text/plain;charset=utf-8"}) : null; }
