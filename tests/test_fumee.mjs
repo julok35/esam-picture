@@ -48,6 +48,14 @@ async function section(nom, fn) {
 const APP_VER = (/const APP_VERSION = "([^"]+)"/.exec(fs.readFileSync(path.join(root, "index.html"), "utf8")) || [])[1];
 
 const browser = await chromium.launch();
+/* Les exports du test sont vérifiés à la taille du format : chaque contexte part de la qualité Réseaux, sauf si la page a
+   déjà un choix. Le défaut réel de l'appli (Presse) est vérifié dans la section « pleine definition », par contexteBrut. */
+const contexteBrut = browser.newContext.bind(browser);
+browser.newContext = async o => {
+  const c = await contexteBrut(o);
+  await c.addInitScript(() => { try { if (localStorage.getItem("esam-picture:qualite") === null) localStorage.setItem("esam-picture:qualite", "reseaux"); } catch (e) {} });
+  return c;
+};
 /* fabrique une photo JPEG (paysage ou portrait) avec des repères colorés, dans un onglet à part */
 async function fakePhoto(ctxB, w, h, name) {
   const pg = await ctxB.newPage();
@@ -1339,8 +1347,19 @@ await section("pleine definition", async () => {
   await pg.click('[data-qual="presse"]'); await pg.waitForTimeout(200);
   const r2 = await exporte("presse");
   check(r2.w === 2160 && r2.h === 2160 && r2.franc > 0.9, `presse : ${r2.w}x${r2.h}, rayures de 2 px nettes (${Math.round(r2.franc * 100)} % de pixels francs)`);
-  // cadre plus serré que la sortie : l'onglet le dit
+  // maximale : cadre maximal = 3000 px de l'original, sortie de 3000 px (ni le format, ni le double), suffixe _max
+  await zoom(100);
+  await pg.click('[data-qual="max"]'); await pg.waitForTimeout(200);
+  const panM = await pg.textContent("#panel");
+  check(panM.includes("Maximale : 3000 x 3000 px") && /_max\.jpg/.test(await pg.textContent("[data-outname]")), "qualité maximale annoncée (3000 x 3000, _max)");
+  const r3 = await exporte("max");
+  check(r3.w === 3000 && r3.h === 3000 && r3.franc > 0.9, `maximale : ${r3.w}x${r3.h}, rayures de 2 px nettes (${Math.round(r3.franc * 100)} % de pixels francs)`);
+  check((await pg.evaluate(() => localStorage.getItem("esam-picture:qualite"))) === "max", "qualité maximale gardée dans le navigateur");
+  // maximale ne descend jamais sous le format et n'agrandit pas au-delà : cadre de 600 px de l'original -> 1080
   await zoom(20);
+  check((await pg.textContent("#panel")).includes("Maximale : 1080 x 1080 px"), "maximale, cadre serré : taille du format (1080 x 1080)");
+  await pg.click('[data-qual="presse"]'); await pg.waitForTimeout(200);
+  // cadre plus serré que la sortie : l'onglet le dit
   const hint3 = await pg.textContent("[data-defhint]");
   check(hint3.includes("le cadre en garde 600 x 600") && hint3.includes("l'image est agrandie"), "cadre plus serré que la sortie : agrandissement signalé");
   await pg.screenshot({ path: path.join(caps, "pc_definition.png") });
@@ -1348,6 +1367,17 @@ await section("pleine definition", async () => {
   for (const t of ["cadre", "couleur", "calques"]) { await pg.click(`[data-tab="${t}"]`); await pg.waitForTimeout(150); }
   check(errs.length === 0, `aucune erreur de page (${errs.join(" | ").slice(0, 200)})`);
   await ctxD.close();
+  // défaut de l'appli sur un navigateur qui n'a encore rien choisi : Presse (dimensions doublées, suffixe _presse)
+  const ctxN = await contexteBrut({ viewport: { width: 1400, height: 900 } });
+  const pn = await ctxN.newPage();
+  await pn.goto(base);
+  await pn.setInputFiles("#fileIn", [await fakePhoto(ctxN, 1600, 1200, "DEFAUT.jpg")]);
+  await pn.waitForSelector("#main:not([hidden])");
+  await pn.click('[data-tab="export"]'); await pn.waitForTimeout(300);
+  const [dln] = await Promise.all([pn.waitForEvent("download"), pn.click('[data-act="export"]')]);
+  const dn = jpgDims(fs.readFileSync(await dln.path()));
+  check((await pn.getAttribute('[data-qual="presse"]', "aria-pressed")) === "true" && /_presse\.jpg$/.test(dln.suggestedFilename()) && dn && dn.join("x") === "2160x2160", `qualité Presse par défaut (${dln.suggestedFilename().slice(-22)}, ${dn && dn.join("x")})`);
+  await ctxN.close();
 });
 if (only && !nSections) { failures++; console.log(`\nECHEC aucune section ne correspond à « ${only} »`); }
 await browser.close(); server.close();
